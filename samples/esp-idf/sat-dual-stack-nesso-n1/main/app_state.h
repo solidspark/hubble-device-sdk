@@ -22,6 +22,7 @@
 
 enum app_phase {
 	APP_PHASE_BOOT,
+	APP_PHASE_SYNCING,
 	APP_PHASE_PROVISIONING,
 	APP_PHASE_COUNTDOWN,
 	APP_PHASE_TX,
@@ -54,6 +55,10 @@ struct app_state {
 	uint32_t beacons_before;
 	uint64_t beacon_since_ms;
 	uint32_t beacon_interval_ms;
+
+	/* Saved location and ephemeris; setup_saved_at_s is 0 if none. */
+	uint64_t setup_saved_at_s;
+	uint8_t setup_sats;
 };
 
 /** @brief Copy the current state; safe from any task. */
@@ -70,6 +75,9 @@ void app_beacon_interval_set(uint32_t interval_ms);
 
 /** @brief Fill the satellite payload from the current sensor readings. */
 void app_payload_build(uint8_t payload[APP_PAYLOAD_LEN]);
+
+/** @brief Erase the saved setup and restart into dual-stack-companion.py setup. */
+void app_setup_forget(void);
 
 /** @brief Unix time in milliseconds, or 0 before provisioning. */
 uint64_t app_time_ms(void);

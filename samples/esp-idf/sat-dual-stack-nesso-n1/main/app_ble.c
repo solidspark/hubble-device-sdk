@@ -428,6 +428,9 @@ static void _on_nimble_stack_reset(int reason)
 	ESP_LOGW(BLE_TAG, "NimBLE stack reset (reason=%d)", reason);
 }
 
+/* Off when the device resumes from a saved setup and needs no companion. */
+static bool _setup_adv;
+
 static void _on_nimble_stack_sync(void)
 {
 	/* 1 = random address */
@@ -437,10 +440,12 @@ static void _on_nimble_stack_sync(void)
 		return;
 	}
 
-	_start_connectable_adv();
+	if (_setup_adv) {
+		_start_connectable_adv();
+	}
 }
 
-int ble_init(void)
+int ble_init(bool setup_adv)
 {
 	int rc;
 	esp_err_t ret;
@@ -482,6 +487,7 @@ int ble_init(void)
 
 	/* Host callbacks */
 	ble_hs_cfg.reset_cb = _on_nimble_stack_reset;
+	_setup_adv = setup_adv;
 	ble_hs_cfg.sync_cb = _on_nimble_stack_sync;
 	ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
 

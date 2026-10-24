@@ -79,6 +79,7 @@ static lv_display_t *_disp;
 
 static lv_obj_t *_boot;
 static lv_obj_t *_boot_fill;
+static lv_obj_t *_boot_lbl;
 static lv_obj_t *_prov;
 static lv_obj_t *_run;
 
@@ -111,6 +112,7 @@ enum menu_item {
 	MENU_TODAY,
 	MENU_BATTERY,
 	MENU_PAYLOAD,
+	MENU_SETUP,
 	MENU_COUNT,
 };
 
@@ -128,6 +130,7 @@ static lv_obj_t *_menu_dots[MENU_COUNT];
 static int _menu_idx;
 static int _menu_pass;
 static int _menu_tick;
+static bool _setup_armed;
 
 static bool _screen_off;
 static volatile bool _wake_request;
@@ -379,6 +382,7 @@ static void _boot_build(lv_obj_t *scr)
 	lbl = _label(_boot, &lv_font_montserrat_10, 0x777777, 3);
 	lv_label_set_text(lbl, "LOADING");
 	lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 28);
+	_boot_lbl = lbl;
 
 	lv_anim_init(&a);
 	lv_anim_set_var(&a, _boot_fill);
@@ -554,7 +558,10 @@ static void _phase_enter(enum app_phase phase)
 {
 	bool running = phase >= APP_PHASE_COUNTDOWN;
 
-	_hidden(_boot, phase != APP_PHASE_BOOT);
+	_hidden(_boot, phase != APP_PHASE_BOOT && phase != APP_PHASE_SYNCING);
+	if (phase == APP_PHASE_SYNCING) {
+		lv_label_set_text(_boot_lbl, "SYNCING TIME");
+	}
 	_hidden(_prov, phase != APP_PHASE_PROVISIONING);
 	_hidden(_run, !running);
 	if (!running) {
@@ -717,6 +724,8 @@ static bool _menu_editable(int idx, const struct app_state *s)
 	case MENU_PACKETS:
 	case MENU_BEACON:
 		return true;
+	case MENU_SETUP:
+		return s->setup_saved_at_s != 0;
 	default:
 		return false;
 	}
@@ -836,6 +845,26 @@ static void _menu_text(const struct app_state *s, uint64_t now, char *title,
 				 temp == INT16_MIN ? 0 : temp / 100);
 		}
 		break;
+	case MENU_SETUP:
+		snprintf(title, len, "SAVED SETUP");
+		if (s->setup_saved_at_s == 0) {
+			snprintf(value, len, "NONE");
+			snprintf(sub, len, "Saved after the companion runs");
+		} else if (_setup_armed) {
+			snprintf(value, len, "CLEAR?");
+			snprintf(sub, len, "Press again to clear and restart");
+		} else {
+			snprintf(value, len, "SAVED");
+			snprintf(sub, len, "%u satellites, %llu d old. Press to "
+					   "clear",
+				 s->setup_sats,
+				 now > s->setup_saved_at_s * MS_PER_SEC
+					 ? (now / MS_PER_SEC -
+					    s->setup_saved_at_s) /
+						   (24 * 60 * 60)
+					 : 0);
+		}
+		break;
 	case MENU_PAYLOAD:
 		app_payload_build(payload);
 		snprintf(title, len, "PAYLOAD");
@@ -905,6 +934,14 @@ static void _menu_step(int dir)
 	case MENU_PACKETS:
 		app_sat_high_set(!s.sat_high);
 		break;
+	case MENU_SETUP:
+		/* Two presses, so a stray tap cannot wipe the setup. */
+		if (!_setup_armed) {
+			_setup_armed = true;
+		} else {
+			app_setup_forget();
+		}
+		break;
 	case MENU_BEACON:
 		i = _beacon_step_idx(s.beacon_interval_ms) + dir;
 		if (i < 0 || i >= BEACON_STEPS) {
@@ -922,6 +959,7 @@ static void _menu_move(int dir)
 {
 	_menu_idx = (_menu_idx + MENU_COUNT + dir) % MENU_COUNT;
 	_menu_pass = 0;
+	_setup_armed = false;
 	_menu_render();
 }
 
@@ -1042,6 +1080,7 @@ static void _menu_show(bool show)
 		_hidden(_picker, true);
 		_menu_idx = MENU_PASS;
 		_menu_pass = 0;
+		_setup_armed = false;
 		_menu_render();
 		lv_obj_move_foreground(_menu);
 	}
