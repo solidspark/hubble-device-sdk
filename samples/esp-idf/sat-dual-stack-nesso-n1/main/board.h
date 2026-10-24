@@ -47,6 +47,9 @@ void board_led_set(bool on);
 /** @brief Turn the LCD backlight on or off; the panel keeps its contents. */
 void board_backlight_set(bool on);
 
+/** @brief true while USB power is present (expander 0x44 P5). */
+bool board_usb_powered(void);
+
 /** @brief true while either front key (KEY1 or KEY2) is held down. */
 bool board_key_pressed(void);
 

@@ -59,6 +59,7 @@ static const char *TAG = "board";
 
 /* Expander 1 (0x44) pins */
 #define EXP1_LCD_RESET  1
+#define EXP1_VIN_DETECT 5
 #define EXP1_LCD_BL     6
 #define EXP1_LED        7
 
@@ -374,6 +375,17 @@ void board_backlight_set(bool on)
 	(void)_reg_update(_exp1, EXP_REG_OUT, EXP1_LCD_BL, on);
 }
 
+bool board_usb_powered(void)
+{
+	uint8_t in;
+
+	if (_reg_read(_exp1, EXP_REG_INPUT, &in, 1) != ESP_OK) {
+		return true;
+	}
+
+	return (in >> EXP1_VIN_DETECT) & 1;
+}
+
 bool board_key_pressed(void)
 {
 	uint8_t in;
@@ -439,9 +451,10 @@ void board_battery_log(void)
 	int16_t ma = 0;
 	bool gauge = board_battery_read(&mv, &ma);
 
-	ESP_LOGI(TAG, "battery: %d%%, %s%u mV, %d mA, charger %s",
+	ESP_LOGI(TAG, "battery: %d%%, %s%u mV, %d mA, charger %s, usb %s",
 		 board_battery_percent(), gauge ? "" : "gauge error, ", mv, ma,
-		 chg == BOARD_CHARGE_UNKNOWN ? "not answering" : names[chg]);
+		 chg == BOARD_CHARGE_UNKNOWN ? "not answering" : names[chg],
+		 board_usb_powered() ? "in" : "out");
 	ESP_LOGI(TAG,
 		 "i2c errors: exp0=%lu exp1=%lu touch=%lu charger=%lu "
 		 "gauge=%lu",

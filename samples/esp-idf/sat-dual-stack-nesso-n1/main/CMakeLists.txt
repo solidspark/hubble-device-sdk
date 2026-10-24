@@ -9,6 +9,7 @@ set(SOURCES
 	"logo.c"
 	"app_setup.c"
 	"app_sntp.c"
+	"app_power_log.c"
 )
 
 idf_component_register(SRCS ${SOURCES}
