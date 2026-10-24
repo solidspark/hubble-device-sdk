@@ -81,6 +81,14 @@ static QueueHandle_t _evt_q;
 
 /* Held while the radio or Wi-Fi needs the chip fully awake. */
 static esp_pm_lock_handle_t _busy_sleep_lock;
+
+/* A Wi-Fi scan and a satellite transmission must not share the radio. */
+static SemaphoreHandle_t _radio_mutex;
+
+/* Beacon interval away from home; the menu changes this one. */
+static uint32_t _away_interval_ms = BEACON_INTERVAL_MS;
+
+static void _busy(bool busy);
 static esp_pm_lock_handle_t _busy_cpu_lock;
 static esp_timer_handle_t _sat_timer;
 
@@ -124,7 +132,7 @@ void app_sat_high_set(bool high)
 	portEXIT_CRITICAL(&_state_lock);
 }
 
-void app_beacon_interval_set(uint32_t interval_ms)
+static void _beacon_interval_apply(uint32_t interval_ms)
 {
 	uint64_t now = app_time_ms();
 
@@ -146,6 +154,62 @@ void app_setup_forget(void)
 {
 	app_setup_clear();
 	esp_restart();
+}
+
+void app_beacon_interval_set(uint32_t interval_ms)
+{
+	bool home;
+
+	portENTER_CRITICAL(&_state_lock);
+	home = _state.home;
+	portEXIT_CRITICAL(&_state_lock);
+
+	_away_interval_ms = interval_ms;
+	if (!home) {
+		_beacon_interval_apply(interval_ms);
+	}
+}
+
+static void _home_set(bool home)
+{
+	uint32_t interval_ms = home ? CONFIG_HUBBLE_SAMPLE_HOME_BEACON_INTERVAL_MS
+				    : _away_interval_ms;
+	bool changed;
+
+	portENTER_CRITICAL(&_state_lock);
+	changed = _state.home != home;
+	_state.home = home;
+	portEXIT_CRITICAL(&_state_lock);
+
+	if (changed) {
+		ESP_LOGI(APP_TAG, "Home Wi-Fi %s: beacon every %lu ms",
+			 home ? "in range" : "gone",
+			 (unsigned long)interval_ms);
+		_beacon_interval_apply(interval_ms);
+	}
+}
+
+static void _home_task(void *arg)
+{
+	struct app_state s;
+	bool home;
+
+	for (;;) {
+		vTaskDelay(pdMS_TO_TICKS(CONFIG_HUBBLE_SAMPLE_HOME_SCAN_MINUTES *
+					 60 * MS_PER_SEC));
+
+		app_state_get(&s);
+		if (s.phase == APP_PHASE_TX) {
+			continue;
+		}
+
+		xSemaphoreTake(_radio_mutex, portMAX_DELAY);
+		_busy(true);
+		home = app_wifi_home_seen();
+		_busy(false);
+		xSemaphoreGive(_radio_mutex);
+		_home_set(home);
+	}
 }
 
 uint64_t app_time_ms(void)
@@ -250,6 +314,8 @@ static bool _setup_resume(void)
 	if (now_s == 0) {
 		goto need_companion;
 	}
+	/* Joining it just now means the home network is in range. */
+	_home_set(true);
 
 	if (now_s < saved_at_s || now_s - saved_at_s > SETUP_MAX_AGE_S) {
 		ESP_LOGW(APP_TAG, "Saved setup is %llu days old; waiting for "
@@ -470,11 +536,13 @@ static void _satellite_run(void)
 
 	ESP_LOGI(APP_TAG, "Starting satellite transmission (%u packets)...",
 		 total);
+	xSemaphoreTake(_radio_mutex, portMAX_DELAY);
 	_busy(true);
 	board_led_set(true);
 	ret = hubble_sat_packet_send(&packet, mode);
 	board_led_set(false);
 	_busy(false);
+	xSemaphoreGive(_radio_mutex);
 	if (ret != 0) {
 		ESP_LOGE(APP_TAG, "Failed to send sat packet, ret: %d", ret);
 	}
@@ -536,7 +604,8 @@ void app_main(void)
 
 	_evt_q = xQueueCreate(4, sizeof(enum app_event));
 	sync_sem = xSemaphoreCreateBinary();
-	if (_evt_q == NULL || sync_sem == NULL) {
+	_radio_mutex = xSemaphoreCreateMutex();
+	if (_evt_q == NULL || sync_sem == NULL || _radio_mutex == NULL) {
 		ESP_LOGE(APP_TAG, "Failed to create queue or semaphore");
 		return;
 	}
@@ -615,6 +684,11 @@ void app_main(void)
 	_synced_ms = hubble_time_get();
 	_provisioned = true;
 	ESP_LOGI(APP_TAG, "Hubble Network initialized");
+
+	if (app_sntp_configured() && CONFIG_HUBBLE_SAMPLE_HOME_SCAN_MINUTES > 0 &&
+	    xTaskCreate(_home_task, "home", 4096, NULL, 2, NULL) != pdPASS) {
+		ESP_LOGW(APP_TAG, "Home Wi-Fi checks disabled (no memory)");
+	}
 
 	for (;;) {
 		app_state_get(&state);

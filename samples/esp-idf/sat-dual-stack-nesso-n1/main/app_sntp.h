@@ -28,4 +28,14 @@ bool app_sntp_configured(void);
  */
 uint64_t app_sntp_time_get(void);
 
+/**
+ * @brief Scan for the configured Wi-Fi network without joining it.
+ *
+ * Scans only the channel it was found on at boot, if known, so the radio
+ * is on for a fraction of a second.
+ *
+ * @return true if the network is in range.
+ */
+bool app_wifi_home_seen(void);
+
 #endif /* APP_SNTP_H */
