@@ -28,6 +28,7 @@
 #include <hubble/sat/pass_prediction.h>
 
 #include "app_ble.h"
+#include "app_power_log.h"
 #include "app_setup.h"
 #include "app_sntp.h"
 #include "app_state.h"
@@ -511,6 +512,7 @@ void app_main(void)
 		if (ui_init() != ESP_OK) {
 			ESP_LOGE(APP_TAG, "UI init failed");
 		}
+		app_power_log_start();
 	}
 
 	resumed = _setup_resume();

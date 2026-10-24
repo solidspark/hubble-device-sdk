@@ -1249,6 +1249,11 @@ static void _touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 	data->point.y = y;
 }
 
+bool ui_screen_on(void)
+{
+	return !_screen_off;
+}
+
 esp_err_t ui_init(void)
 {
 	const lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
