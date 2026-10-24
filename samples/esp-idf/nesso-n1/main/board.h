@@ -1,0 +1,62 @@
+/*
+ * Copyright (c) 2026 Hubble Network, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
+ * @file board.h
+ * @brief Arduino Nesso N1 board support: display, touch, LED and battery.
+ */
+
+#ifndef BOARD_H
+#define BOARD_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "esp_err.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_ops.h"
+
+/* The 1.14" ST7789 panel, used in landscape */
+#define BOARD_LCD_H_RES 240
+#define BOARD_LCD_V_RES 135
+
+/**
+ * @brief Bring up the I2C bus, the IO expanders and the LCD.
+ *
+ * Leaves the backlight on and the panel cleared to black.
+ *
+ * @return ESP_OK on success.
+ */
+esp_err_t board_init(void);
+
+esp_lcd_panel_io_handle_t board_lcd_io(void);
+esp_lcd_panel_handle_t board_lcd_panel(void);
+
+/**
+ * @brief Read the first touch point, in landscape screen coordinates.
+ *
+ * @return true while a finger is on the panel.
+ */
+bool board_touch_read(uint16_t *x, uint16_t *y);
+
+void board_led_set(bool on);
+
+/**
+ * @brief Battery state of charge from the BQ27220 fuel gauge.
+ *
+ * @return 0-100, or -1 if the gauge did not answer.
+ */
+int board_battery_percent(void);
+
+/**
+ * @brief Battery temperature from the BQ27220 fuel gauge.
+ *
+ * @return Temperature in hundredths of a degree Celsius, or INT16_MIN if the
+ *         gauge did not answer.
+ */
+int16_t board_battery_temp_centi_c(void);
+
+#endif /* BOARD_H */
