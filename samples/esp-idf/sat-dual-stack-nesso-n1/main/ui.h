@@ -26,6 +26,9 @@
  */
 esp_err_t ui_init(void);
 
+/** @brief Turn the screen off now, as the idle timeout would. */
+void ui_screen_force_off(void);
+
 /** @brief true while the backlight is on. */
 bool ui_screen_on(void);
 
