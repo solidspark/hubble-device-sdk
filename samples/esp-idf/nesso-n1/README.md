@@ -19,8 +19,29 @@ requirements, the device key, and `dual-stack-companion.py`.
 | Window complete (green) | The transmission finished. Returns to the countdown. |
 | Beaconing | Terrestrial mode: BLE beacons only, with an estimated count of packets today (UTC). |
 
-Tap the marker at the top of the ring to choose **Satellite** or
-**Terrestrial**.
+Tap the marker at the top of the ring to choose **Satellite** (satellite at
+each pass, BLE beacon between passes) or **Terrestrial** (BLE beacon only).
+
+## Front Button and Menu
+
+- **Click**: turn the screen off or on. The radio keeps running.
+- **Double-click**: open or close the menu.
+
+The menu shows one value at a time: the value on the left, **+** and **−** on
+the right. Swipe up or down, or tap the left side, to move between values.
+
+| Value | Editable |
+| --- | --- |
+| Mode | Satellite or terrestrial |
+| Next pass | Browse the next three passes |
+| Packets per pass | 16 (high, 10 s apart) or 8 (normal, 20 s apart) |
+| Sat Tx power | No: 20 dBm at the chip; antenna gain not included |
+| Beacon every | 0.5, 1.1, 2, 5 or 10 s |
+| Beacons today | No |
+| Battery | No |
+| Payload | No |
+
+Settings are held in RAM and reset on reboot, like the provisioning data.
 
 The satellite payload is 4 bytes: battery temperature (int16, hundredths of a
 degree Celsius, big endian), battery percent, and a reserved byte.
@@ -43,4 +64,5 @@ needed.
   are on the PI4IOE5V6408 expander at 0x44 (P1, P6).
 - Touch: FT6336U at 0x38 on I2C (SDA 10, SCL 8).
 - LED: expander 0x44 P7, active low. It is on during a satellite transmission.
+- Keys: expander 0x43 P0 and P1, active low with pull-ups. Either key works.
 - The SX1262 LoRa radio shares the SPI bus; its CS (GPIO 23) is held high.
