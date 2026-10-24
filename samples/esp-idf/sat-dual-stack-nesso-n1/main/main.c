@@ -16,6 +16,7 @@
 
 /* ESP-IDF components */
 #include "esp_log.h"
+#include "esp_pm.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "mbedtls/base64.h"
@@ -75,6 +76,10 @@ enum app_event {
 };
 
 static QueueHandle_t _evt_q;
+
+/* Held while the radio or Wi-Fi needs the chip fully awake. */
+static esp_pm_lock_handle_t _busy_sleep_lock;
+static esp_pm_lock_handle_t _busy_cpu_lock;
 static esp_timer_handle_t _sat_timer;
 
 static struct app_state _state = {
@@ -146,6 +151,47 @@ uint64_t app_time_ms(void)
 	return _provisioned ? hubble_time_get() : 0;
 }
 
+static void _busy(bool busy)
+{
+	if (_busy_sleep_lock == NULL) {
+		return;
+	}
+	if (busy) {
+		esp_pm_lock_acquire(_busy_sleep_lock);
+		esp_pm_lock_acquire(_busy_cpu_lock);
+	} else {
+		esp_pm_lock_release(_busy_cpu_lock);
+		esp_pm_lock_release(_busy_sleep_lock);
+	}
+}
+
+/*
+ * Light-sleep whenever nothing holds a lock. The satellite radio times its
+ * frames with a gptimer and takes no lock of its own, so _busy() covers the
+ * whole transmission window.
+ */
+static void _pm_init(void)
+{
+	esp_pm_config_t pm = {
+		.max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+		.min_freq_mhz = 40,
+		.light_sleep_enable = true,
+	};
+	esp_err_t err = esp_pm_configure(&pm);
+
+	if (err != ESP_OK) {
+		ESP_LOGW(APP_TAG, "Power management off (%s)",
+			 esp_err_to_name(err));
+		return;
+	}
+	if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "busy",
+			       &_busy_sleep_lock) != ESP_OK ||
+	    esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "busy_cpu",
+			       &_busy_cpu_lock) != ESP_OK) {
+		_busy_sleep_lock = NULL;
+	}
+}
+
 static void _phase_set(enum app_phase phase)
 {
 	portENTER_CRITICAL(&_state_lock);
@@ -196,7 +242,9 @@ static bool _setup_resume(void)
 	}
 
 	_phase_set(APP_PHASE_SYNCING);
+	_busy(true);
 	now_s = app_sntp_time_get() / MS_PER_SEC;
+	_busy(false);
 	if (now_s == 0) {
 		goto need_companion;
 	}
@@ -420,9 +468,11 @@ static void _satellite_run(void)
 
 	ESP_LOGI(APP_TAG, "Starting satellite transmission (%u packets)...",
 		 total);
+	_busy(true);
 	board_led_set(true);
 	ret = hubble_sat_packet_send(&packet, mode);
 	board_led_set(false);
+	_busy(false);
 	if (ret != 0) {
 		ESP_LOGE(APP_TAG, "Failed to send sat packet, ret: %d", ret);
 	}
@@ -453,6 +503,8 @@ void app_main(void)
 		err = nvs_flash_init();
 	}
 	ESP_ERROR_CHECK(err);
+
+	_pm_init();
 
 	/* Decode device key */
 	if (strlen(CONFIG_HUBBLE_DEVICE_KEY) != 0) {
