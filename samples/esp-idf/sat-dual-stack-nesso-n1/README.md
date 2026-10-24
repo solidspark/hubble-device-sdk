@@ -39,7 +39,7 @@ Nesso N1's 1.14" 240 × 135 touchscreen and front buttons. It is designed to:
 | Loading | At boot. |
 | Waiting for setup | The device advertises as **Hubble-ESP** until `dual-stack-companion.py` provisions it. |
 | Next pass | Countdown to the next pass, with its local time (PT by default) and peak elevation. The ring is a 24-hour dial; the blurple rings mark the next three passes. |
-| Transmitting | During a pass. The ring fills as packets are sent. |
+| Transmitting | During a pass. The ring fills as packets are sent. The screen wakes 10 s before the pass, flashes blurple on each second of the last 10, and stays on until 10 s after the window. |
 | Window complete | The transmission finished. The screen returns to the countdown. |
 | Beaconing | Terrestrial mode: BLE beacons only, with an estimated count of packets sent today (UTC). |
 

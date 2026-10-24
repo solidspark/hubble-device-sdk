@@ -70,6 +70,10 @@ extern const lv_image_dsc_t hubble_logo;
 /* The backlight turns off after this long with no touch or key press. */
 #define SCREEN_IDLE_MS 10000
 
+/* Lead-in to a pass: wake this early and flash blurple on each second. */
+#define PASS_LEAD_MS   10000
+#define PASS_FLASH_MS  300
+
 #define MENU_SPLIT_X   158
 #define MENU_TEXT_X    20
 #define MENU_TEXT_W    (MENU_SPLIT_X - MENU_TEXT_X - 4)
@@ -642,13 +646,21 @@ static void _sats_place(const struct app_state *s, uint64_t now)
 
 static void _render_countdown(const struct app_state *s, uint64_t now)
 {
+	uint64_t rem = s->next_tx_ms > now ? s->next_tx_ms - now : 0;
 	char buf[24];
 	char clock[8];
 	bool long_fmt;
 
-	_fmt_duration(buf, sizeof(buf),
-		      s->next_tx_ms > now ? s->next_tx_ms - now : 0,
-		      &long_fmt);
+	/*
+	 * The display rounds up, so a new second shows when rem % 1000 wraps
+	 * to just under 1000; flash for the first PASS_FLASH_MS of it.
+	 */
+	if (rem > 0 && rem <= PASS_LEAD_MS) {
+		_bg_set(rem % 1000 > 1000 - PASS_FLASH_MS ? COLOR_BLURPLE
+							   : COLOR_BLACK);
+	}
+
+	_fmt_duration(buf, sizeof(buf), rem, &long_fmt);
 	_label_set(_top_lbl, "NEXT PASS");
 	lv_obj_set_style_text_font(_big, long_fmt ? &lv_font_montserrat_20
 						  : &lv_font_montserrat_28,
@@ -690,18 +702,19 @@ static void _render_tx(const struct app_state *s, uint64_t now)
 	lv_obj_set_style_text_font(_big, &lv_font_montserrat_28, 0);
 	_label_set(_big, buf);
 	_label_set(_bot_lbl, "PACKETS SENT");
-	_label_set(_info1, "Overhead");
+	/* The info column is 94 px; at 20 px "Overhead" does not fit. */
 	snprintf(buf, sizeof(buf), "EL %.0f°", s->pass_elevation[0]);
-	_label_set(_info2, buf);
+	_label_set(_info1, buf);
+	_label_set(_info2, "OVERHEAD");
 }
 
 static void _render_done(const struct app_state *s)
 {
 	char buf[16];
 
-	snprintf(buf, sizeof(buf), "%u/%u sent", s->tx_total, s->tx_total);
+	snprintf(buf, sizeof(buf), "%u/%u", s->tx_total, s->tx_total);
 	_label_set(_info1, buf);
-	_label_set(_info2, "SATELLITE");
+	_label_set(_info2, "SENT");
 }
 
 static void _render_terrestrial(const struct app_state *s, uint64_t now)
@@ -1222,6 +1235,7 @@ static void _key_task(void *arg)
 {
 	enum app_phase seen = APP_PHASE_BOOT;
 	struct app_state s;
+	uint64_t lead_woken = 0;
 	bool was_down = false;
 	uint32_t down_at = 0;
 	uint32_t up_at = 0;
@@ -1235,6 +1249,15 @@ static void _key_task(void *arg)
 		app_state_get(&s);
 		if (_screen_off && s.phase != seen) {
 			_wake();
+		} else if (_screen_off && s.phase == APP_PHASE_COUNTDOWN &&
+			   s.next_tx_ms != lead_woken) {
+			uint64_t t = app_time_ms();
+
+			if (t + PASS_LEAD_MS >= s.next_tx_ms &&
+			    t < s.next_tx_ms) {
+				lead_woken = s.next_tx_ms;
+				_wake();
+			}
 		}
 		seen = s.phase;
 
@@ -1265,6 +1288,7 @@ static void _tick_cb(lv_timer_t *t)
 	uint64_t now;
 
 	app_state_get(&s);
+	now = app_time_ms();
 	if (s.phase != _shown_phase) {
 		_phase_enter(s.phase);
 		/* Show the moment a pass starts, ends or setup finishes. */
@@ -1274,11 +1298,18 @@ static void _tick_cb(lv_timer_t *t)
 		_shown_phase = s.phase;
 	}
 
-	if (!_screen_off && lv_tick_elaps(_last_activity) > SCREEN_IDLE_MS) {
+	/*
+	 * Stay on through a satellite window; the phase change back to the
+	 * countdown restarts the idle timer, so it goes dark 10 s after.
+	 */
+	if (!_screen_off && s.phase != APP_PHASE_TX &&
+	    s.phase != APP_PHASE_DONE &&
+	    !(s.phase == APP_PHASE_COUNTDOWN &&
+	      s.next_tx_ms <= now + PASS_LEAD_MS) &&
+	    lv_tick_elaps(_last_activity) > SCREEN_IDLE_MS) {
 		_screen_set(false);
 	}
 
-	now = app_time_ms();
 	switch (s.phase) {
 	case APP_PHASE_COUNTDOWN:
 		_render_countdown(&s, now);
