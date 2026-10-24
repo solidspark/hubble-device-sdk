@@ -24,7 +24,8 @@ each pass, BLE beacon between passes) or **Terrestrial** (BLE beacon only).
 
 ## Front Button and Menu
 
-- **Click**: turn the screen off or on. The radio keeps running.
+- **Click**: close the menu if it is open; otherwise turn the screen off or
+  on. The radio keeps running.
 - **Double-click**: open or close the menu.
 
 The menu shows one value at a time: the value on the left, **+** and **−** on
