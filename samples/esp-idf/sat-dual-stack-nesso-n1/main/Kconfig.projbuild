@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Hubble Network, Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-menu "Sat Dual Stack Sample Configuration"
+menu "Sat Dual Stack Nesso N1 Sample Configuration"
 
     orsource "$IDF_PATH/examples/common_components/env_caps/$IDF_TARGET/Kconfig.env_caps"
 
