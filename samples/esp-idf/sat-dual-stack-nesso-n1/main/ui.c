@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -229,12 +230,14 @@ static void _fmt_thousands(char *buf, size_t len, uint32_t n)
 	}
 }
 
-static void _fmt_utc_clock(char *buf, size_t len, uint64_t unix_ms)
+/* Pass times show in CONFIG_HUBBLE_SAMPLE_TZ, set as TZ at boot (main.c). */
+static void _fmt_local_clock(char *buf, size_t len, uint64_t unix_ms)
 {
-	uint64_t s = (unix_ms % MS_PER_DAY) / MS_PER_SEC;
+	time_t t = unix_ms / MS_PER_SEC;
+	struct tm tm;
 
-	snprintf(buf, len, "%02u:%02u", (unsigned)(s / 3600),
-		 (unsigned)((s % 3600) / 60));
+	localtime_r(&t, &tm);
+	snprintf(buf, len, "%02d:%02d", tm.tm_hour, tm.tm_min);
 }
 
 static void _label_set(lv_obj_t *l, const char *text)
@@ -585,6 +588,9 @@ static void _phase_enter(enum app_phase phase)
 						       : LV_OPA_COVER,
 				 LV_PART_MAIN);
 	_hidden(_top_lbl, phase == APP_PHASE_DONE);
+	/* "TRANSMITTING" at 2 px spacing is wider than the ring. */
+	lv_obj_set_style_text_letter_space(_top_lbl,
+					   phase == APP_PHASE_TX ? 1 : 2, 0);
 	_hidden(_big, phase == APP_PHASE_DONE);
 	_hidden(_bot_lbl, phase == APP_PHASE_DONE);
 	_hidden(_done_lbl, phase != APP_PHASE_DONE);
@@ -635,6 +641,7 @@ static void _sats_place(const struct app_state *s, uint64_t now)
 static void _render_countdown(const struct app_state *s, uint64_t now)
 {
 	char buf[24];
+	char clock[8];
 	bool long_fmt;
 
 	_fmt_duration(buf, sizeof(buf),
@@ -648,10 +655,11 @@ static void _render_countdown(const struct app_state *s, uint64_t now)
 	_label_set(_bot_lbl, long_fmt ? "HR MIN SEC" : "MIN  SEC");
 
 	if (s->pass_count > 0) {
-		_fmt_utc_clock(buf, sizeof(buf), s->pass_start_ms[0]);
+		_fmt_local_clock(clock, sizeof(clock), s->pass_start_ms[0]);
+		snprintf(buf, sizeof(buf), "%s %s", clock,
+			 CONFIG_HUBBLE_SAMPLE_TZ_LABEL);
 		_label_set(_info1, buf);
-		snprintf(buf, sizeof(buf), "UTC  %.0f° MAX",
-			 s->pass_elevation[0]);
+		snprintf(buf, sizeof(buf), "EL %.0f°", s->pass_elevation[0]);
 		_label_set(_info2, buf);
 	}
 	_sats_place(s, now);
@@ -681,7 +689,7 @@ static void _render_tx(const struct app_state *s, uint64_t now)
 	_label_set(_big, buf);
 	_label_set(_bot_lbl, "PACKETS SENT");
 	_label_set(_info1, "Overhead");
-	snprintf(buf, sizeof(buf), "%.0f° MAX", s->pass_elevation[0]);
+	snprintf(buf, sizeof(buf), "EL %.0f°", s->pass_elevation[0]);
 	_label_set(_info2, buf);
 }
 
@@ -801,13 +809,14 @@ static void _menu_text(const struct app_state *s, uint64_t now, char *title,
 		}
 		snprintf(title, len, "PASS %d OF %u", _menu_pass + 1,
 			 s->pass_count);
-		_fmt_utc_clock(value, len, s->pass_start_ms[_menu_pass]);
+		_fmt_local_clock(value, len, s->pass_start_ms[_menu_pass]);
 		_fmt_duration(dur, sizeof(dur),
 			      s->pass_start_ms[_menu_pass] > now
 				      ? s->pass_start_ms[_menu_pass] - now
 				      : 0,
 			      &long_fmt);
-		snprintf(sub, len, "UTC, in %s, %.0f° max", dur,
+		snprintf(sub, len, "%s, in %s, EL %.0f°",
+			 CONFIG_HUBBLE_SAMPLE_TZ_LABEL, dur,
 			 s->pass_elevation[_menu_pass]);
 		break;
 	case MENU_PACKETS:

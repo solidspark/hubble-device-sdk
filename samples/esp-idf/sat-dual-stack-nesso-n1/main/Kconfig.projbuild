@@ -36,6 +36,17 @@ menu "Sat Dual Stack Nesso N1 Sample Configuration"
     string "SNTP server"
     default "pool.ntp.org"
 
+    config HUBBLE_SAMPLE_TZ
+    string "Time zone for pass times (POSIX TZ)"
+    default "PST8PDT,M3.2.0,M11.1.0"
+    help
+        Pass times on screen are shown in this time zone. The default is
+        US Pacific time with daylight saving.
+
+    config HUBBLE_SAMPLE_TZ_LABEL
+    string "Time zone label shown after pass times"
+    default "PT"
+
     config HUBBLE_SAMPLE_SETUP_MAX_AGE_DAYS
     int "Days a saved setup is used without the companion"
     default 7

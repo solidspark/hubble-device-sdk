@@ -20,7 +20,9 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "mbedtls/base64.h"
+#include <stdlib.h>
 #include <sys/time.h>
+#include <time.h>
 #include "nvs_flash.h"
 
 #include <hubble/hubble.h>
@@ -505,6 +507,9 @@ void app_main(void)
 	ESP_ERROR_CHECK(err);
 
 	_pm_init();
+
+	setenv("TZ", CONFIG_HUBBLE_SAMPLE_TZ, 1);
+	tzset();
 
 	/* Decode device key */
 	if (strlen(CONFIG_HUBBLE_DEVICE_KEY) != 0) {
