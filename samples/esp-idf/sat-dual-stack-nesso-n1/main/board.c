@@ -81,7 +81,13 @@ static const char *TAG = "board";
 #define GAUGE_REG_RM    0x10
 #define GAUGE_REG_FCC   0x12
 
-#define I2C_TIMEOUT_MS  50
+/*
+ * Same bus settings as HubbleNetwork/hitl-shell's Nesso N1 port. At 400 kHz
+ * with a 50 ms timeout the bus locked up for minutes at a time, likely while
+ * the BQ27220 held the clock low during an internal update.
+ */
+#define I2C_SPEED_HZ    100000
+#define I2C_TIMEOUT_MS  1000
 
 static i2c_master_bus_handle_t _i2c_bus;
 static i2c_master_dev_handle_t _exp0;
@@ -93,19 +99,51 @@ static i2c_master_dev_handle_t _chg;
 static esp_lcd_panel_io_handle_t _lcd_io;
 static esp_lcd_panel_handle_t _lcd_panel;
 
+/* Failed transfers per chip, logged with the battery to find a bad actor. */
+static uint32_t _errs_exp0;
+static uint32_t _errs_exp1;
+static uint32_t _errs_touch;
+static uint32_t _errs_chg;
+static uint32_t _errs_gauge;
+
+static void _count_error(i2c_master_dev_handle_t dev)
+{
+	if (dev == _exp0) {
+		_errs_exp0++;
+	} else if (dev == _exp1) {
+		_errs_exp1++;
+	} else if (dev == _touch) {
+		_errs_touch++;
+	} else if (dev == _chg) {
+		_errs_chg++;
+	} else if (dev == _gauge) {
+		_errs_gauge++;
+	}
+}
+
 static esp_err_t _reg_write(i2c_master_dev_handle_t dev, uint8_t reg,
 			    uint8_t val)
 {
 	uint8_t buf[2] = {reg, val};
+	esp_err_t err = i2c_master_transmit(dev, buf, sizeof(buf),
+					    I2C_TIMEOUT_MS);
 
-	return i2c_master_transmit(dev, buf, sizeof(buf), I2C_TIMEOUT_MS);
+	if (err != ESP_OK) {
+		_count_error(dev);
+	}
+	return err;
 }
 
 static esp_err_t _reg_read(i2c_master_dev_handle_t dev, uint8_t reg,
 			   uint8_t *out, size_t len)
 {
-	return i2c_master_transmit_receive(dev, &reg, 1, out, len,
-					   I2C_TIMEOUT_MS);
+	esp_err_t err = i2c_master_transmit_receive(dev, &reg, 1, out, len,
+						    I2C_TIMEOUT_MS);
+
+	if (err != ESP_OK) {
+		_count_error(dev);
+	}
+	return err;
 }
 
 static esp_err_t _reg_update(i2c_master_dev_handle_t dev, uint8_t reg,
@@ -141,7 +179,7 @@ static esp_err_t _i2c_init(void)
 	};
 	i2c_device_config_t dev_cfg = {
 		.dev_addr_length = I2C_ADDR_BIT_LEN_7,
-		.scl_speed_hz = 400000,
+		.scl_speed_hz = I2C_SPEED_HZ,
 	};
 
 	ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_cfg, &_i2c_bus), TAG,
@@ -404,6 +442,12 @@ void board_battery_log(void)
 	ESP_LOGI(TAG, "battery: %d%%, %s%u mV, %d mA, charger %s",
 		 board_battery_percent(), gauge ? "" : "gauge error, ", mv, ma,
 		 chg == BOARD_CHARGE_UNKNOWN ? "not answering" : names[chg]);
+	ESP_LOGI(TAG,
+		 "i2c errors: exp0=%lu exp1=%lu touch=%lu charger=%lu "
+		 "gauge=%lu",
+		 (unsigned long)_errs_exp0, (unsigned long)_errs_exp1,
+		 (unsigned long)_errs_touch, (unsigned long)_errs_chg,
+		 (unsigned long)_errs_gauge);
 }
 
 int16_t board_battery_temp_centi_c(void)
