@@ -66,4 +66,9 @@ needed.
 - Touch: FT6336U at 0x38 on I2C (SDA 10, SCL 8).
 - LED: expander 0x44 P7, active low. It is on during a satellite transmission.
 - Keys: expander 0x43 P0 and P1, active low with pull-ups. Either key works.
+- Battery: BQ27220 fuel gauge at 0x55 and AW32001 charger at 0x49. At boot
+  the sample enables charging and turns off the charger watchdog, as the
+  Arduino library does, and logs percent, voltage, current and charge state
+  every minute. The main screens show the gauge level top right, with a bolt
+  while charging.
 - The SX1262 LoRa radio shares the SPI bus; its CS (GPIO 23) is held high.

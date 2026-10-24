@@ -57,6 +57,29 @@ bool board_key_pressed(void);
  */
 int board_battery_percent(void);
 
+enum board_charge {
+	BOARD_CHARGE_UNKNOWN = -1,
+	BOARD_CHARGE_OFF,
+	BOARD_CHARGE_PRE,
+	BOARD_CHARGE_ON,
+	BOARD_CHARGE_FULL,
+};
+
+/** @brief Charge state from the AW32001 charger. */
+enum board_charge board_charge_state(void);
+
+/**
+ * @brief Battery voltage and current from the BQ27220 fuel gauge.
+ *
+ * @param mv Battery voltage in millivolts.
+ * @param ma Battery current in milliamps; positive while charging.
+ * @return false if the gauge did not answer.
+ */
+bool board_battery_read(uint16_t *mv, int16_t *ma);
+
+/** @brief Log percent, voltage, current and charge state. */
+void board_battery_log(void);
+
 /**
  * @brief Battery temperature from the BQ27220 fuel gauge.
  *

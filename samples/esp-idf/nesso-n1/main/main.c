@@ -48,6 +48,7 @@ static const char *APP_TAG = "main";
 #define BEACON_INTERVAL_MS 1100U
 
 #define DONE_SCREEN_MS     2600U
+#define BATTERY_LOG_US     (60ULL * 1000 * 1000)
 #define PASS_SEARCH_LIMIT  8
 
 /* Device location and sat orbital parameters */
@@ -138,6 +139,11 @@ static void _phase_set(enum app_phase phase)
 	portENTER_CRITICAL(&_state_lock);
 	_state.phase = phase;
 	portEXIT_CRITICAL(&_state_lock);
+}
+
+static void _battery_log_cb(void *arg)
+{
+	board_battery_log();
 }
 
 static void _sat_timer_cb(void *arg)
@@ -414,8 +420,21 @@ void app_main(void)
 	if (err != ESP_OK) {
 		ESP_LOGE(APP_TAG, "Board init failed (%s)",
 			 esp_err_to_name(err));
-	} else if (ui_init() != ESP_OK) {
-		ESP_LOGE(APP_TAG, "UI init failed");
+	} else {
+		esp_timer_create_args_t log_args = {
+			.callback = _battery_log_cb,
+			.name = "battery_log",
+		};
+		esp_timer_handle_t log_timer;
+
+		board_battery_log();
+		if (esp_timer_create(&log_args, &log_timer) == ESP_OK) {
+			(void)esp_timer_start_periodic(log_timer,
+						       BATTERY_LOG_US);
+		}
+		if (ui_init() != ESP_OK) {
+			ESP_LOGE(APP_TAG, "UI init failed");
+		}
 	}
 
 	/* Init and enable BLE */
