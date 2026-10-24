@@ -50,6 +50,15 @@ void board_led_set(bool on);
 /** @brief Turn the LCD backlight on or off; the panel keeps its contents. */
 void board_backlight_set(bool on);
 
+/** @brief Drive the LoRa block's expander pin E0.P7 (enable or reset). */
+void board_lora_enable(bool on);
+
+/** @brief Switch the Grove port's power (expander E1.P2). */
+void board_grove_power(bool on);
+
+/** @brief Disconnect USB input so the board runs from its battery. */
+void board_charger_hiz(bool hiz);
+
 /** @brief true while USB power is present (expander 0x44 P5). */
 bool board_usb_powered(void);
 

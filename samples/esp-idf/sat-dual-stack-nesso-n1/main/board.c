@@ -75,6 +75,7 @@ static const char *TAG = "board";
 
 /* Expander 1 (0x44) pins */
 #define EXP1_LCD_RESET  1
+#define EXP1_GROVE_PWR  2
 #define EXP1_VIN_DETECT 5
 #define EXP1_LCD_BL     6
 #define EXP1_LED        7
@@ -490,6 +491,22 @@ void board_led_set(bool on)
 void board_backlight_set(bool on)
 {
 	(void)_reg_update(_exp1, EXP_REG_OUT, EXP1_LCD_BL, on);
+}
+
+void board_lora_enable(bool on)
+{
+	(void)_exp_output(_exp0, EXP0_LORA_NRST, on);
+}
+
+void board_grove_power(bool on)
+{
+	(void)_exp_output(_exp1, EXP1_GROVE_PWR, on);
+}
+
+/* Hi-Z cuts USB input from the system, so it runs from the battery. */
+void board_charger_hiz(bool hiz)
+{
+	(void)_reg_update(_chg, CHG_REG_PWR_CFG, CHG_HIZ_BIT, hiz);
 }
 
 bool board_usb_powered(void)
