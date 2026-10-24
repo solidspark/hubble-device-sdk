@@ -64,7 +64,7 @@ between values.
 | Mode | Satellite or terrestrial. |
 | Packets per pass | 16 (`HUBBLE_SAT_RELIABILITY_HIGH`, 10 s apart) or 8 (`HUBBLE_SAT_RELIABILITY_NORMAL`, 20 s apart). |
 | Sat Tx power | Read only: 20 dBm at the chip. |
-| Beacon every | 0.5, 1.1, 2, 5 or 10 s. |
+| Beacon every | 0.5, 1, 1.5, 2, 5 or 10 s. |
 | Beacons today | Read only. |
 | Battery | Read only: charge, current, voltage and temperature. |
 | Payload | Read only. |
@@ -123,9 +123,9 @@ can also be changed at runtime from the menu.
 
 | Parameter | Value | Set by |
 | --- | --- | --- |
-| Beacon interval | 1000–1200 ms | `ADV_INTERVAL_MIN_MS` / `ADV_INTERVAL_MAX_MS` in [main/app_ble.c](main/app_ble.c) |
+| Beacon interval | 1364–1636 ms (1.5 s mean) | `ADV_INTERVAL_MIN_MS` / `ADV_INTERVAL_MAX_MS` in [main/app_ble.c](main/app_ble.c) |
 | Provisioning interval (connectable) | 100–150 ms | NimBLE GAP fast interval `BLE_GAP_ADV_FAST_INTERVAL2_MIN` / `BLE_GAP_ADV_FAST_INTERVAL2_MAX` in [main/app_ble.c](main/app_ble.c) |
-| Tx power | 0 dBm | `CONFIG_BT_LE_DFT_TX_POWER_LEVEL_N0` in [sdkconfig.defaults](sdkconfig.defaults) |
+| Tx power | +3 dBm | `CONFIG_BT_LE_DFT_TX_POWER_LEVEL_P3` in [sdkconfig.defaults](sdkconfig.defaults) |
 
 ## Configurations
 
