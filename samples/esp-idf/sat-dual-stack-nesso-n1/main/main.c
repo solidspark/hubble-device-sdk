@@ -32,6 +32,7 @@
 
 #include "app_ble.h"
 #include "app_power_log.h"
+#include "app_power_test.h"
 #include "app_setup.h"
 #include "app_sntp.h"
 #include "app_state.h"
@@ -639,6 +640,8 @@ void app_main(void)
 			ESP_LOGE(APP_TAG, "UI init failed");
 		}
 		app_power_log_start();
+		/* Before setup: the test must run even if provisioning stalls. */
+		app_power_test_start();
 	}
 
 	resumed = _setup_resume();
@@ -689,6 +692,7 @@ void app_main(void)
 	    xTaskCreate(_home_task, "home", 4096, NULL, 2, NULL) != pdPASS) {
 		ESP_LOGW(APP_TAG, "Home Wi-Fi checks disabled (no memory)");
 	}
+
 
 	for (;;) {
 		app_state_get(&state);

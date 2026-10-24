@@ -50,6 +50,16 @@ menu "Sat Dual Stack Nesso N1 Sample Configuration"
     default 10000
     range 1000 10000
 
+    config HUBBLE_SAMPLE_POWER_TEST
+    bool "Run the A/B battery-draw test once per build"
+    default n
+    help
+        For battery-life work. About 20 s after boot, puts the charger in
+        Hi-Z so the board runs from its battery while on USB, then steps
+        through LoRa, Grove and BLE settings for 2.5 min each and logs the
+        draw of each at the next boot. Also turn off
+        CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION, or USB keeps the chip awake.
+
     config HUBBLE_SAMPLE_TZ
     string "Time zone for pass times (POSIX TZ)"
     default "PST8PDT,M3.2.0,M11.1.0"

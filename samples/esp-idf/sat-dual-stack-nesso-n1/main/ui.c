@@ -1357,6 +1357,14 @@ static void _touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 	data->point.y = y;
 }
 
+void ui_screen_force_off(void)
+{
+	if (lvgl_port_lock(0)) {
+		_screen_set(false);
+		lvgl_port_unlock();
+	}
+}
+
 bool ui_screen_on(void)
 {
 	return !_screen_off;
