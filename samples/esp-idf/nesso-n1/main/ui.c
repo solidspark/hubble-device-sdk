@@ -56,6 +56,13 @@ extern const lv_image_dsc_t hubble_logo;
 #define KEY_TASK_STACK 3072
 #define KEY_TASK_PRIO  3
 
+/* Battery gauge in the top-right corner of the main screens */
+#define BATT_W         18
+#define BATT_H         9
+#define BATT_X         (BOARD_LCD_H_RES - BATT_W - 8)
+#define BATT_Y         6
+#define BATT_REFRESH   50
+
 #define MENU_SPLIT_X   158
 #define MENU_TEXT_X    20
 #define MENU_TEXT_W    (MENU_SPLIT_X - MENU_TEXT_X - 4)
@@ -84,6 +91,10 @@ static lv_obj_t *_bot_lbl;
 static lv_obj_t *_done_lbl;
 static lv_obj_t *_info1;
 static lv_obj_t *_info2;
+
+static lv_obj_t *_batt_fill;
+static lv_obj_t *_batt_bolt;
+static int _batt_tick = BATT_REFRESH;
 
 static lv_obj_t *_picker;
 static lv_obj_t *_pick_hl;
@@ -118,6 +129,8 @@ static int _menu_tick;
 static bool _screen_off;
 
 static bool _menu_open(void);
+static void _hidden(lv_obj_t *o, bool hidden);
+static void _batt_build(lv_obj_t *parent);
 
 static enum app_phase _shown_phase = (enum app_phase)-1;
 static enum app_radio _picked;
@@ -457,10 +470,57 @@ static void _run_build(lv_obj_t *scr)
 	lv_obj_set_style_text_align(_info1, LV_TEXT_ALIGN_LEFT, 0);
 	lv_obj_set_style_text_align(_info2, LV_TEXT_ALIGN_LEFT, 0);
 
+	_batt_build(_run);
+
 	/* A finger is wider than the 14 px marker; give it a bigger target. */
 	hit = _box(_run, RING_CX - 22, 0, 44, ZEN_Y + 20);
 	lv_obj_add_flag(hit, LV_OBJ_FLAG_CLICKABLE);
 	lv_obj_add_event_cb(hit, _zen_clicked_cb, LV_EVENT_CLICKED, NULL);
+}
+
+/* ---------- battery gauge ---------- */
+
+static bool _charging(void)
+{
+	enum board_charge chg = board_charge_state();
+
+	return chg == BOARD_CHARGE_ON || chg == BOARD_CHARGE_PRE;
+}
+
+static void _batt_build(lv_obj_t *parent)
+{
+	lv_obj_t *body = _box(parent, BATT_X, BATT_Y, BATT_W, BATT_H);
+	lv_obj_t *nub = _box(parent, BATT_X + BATT_W, BATT_Y + 3, 2,
+			     BATT_H - 6);
+
+	lv_obj_set_style_radius(body, 2, 0);
+	lv_obj_set_style_border_color(body, lv_color_hex(COLOR_WHITE), 0);
+	lv_obj_set_style_border_width(body, 1, 0);
+	lv_obj_set_style_border_opa(body, LV_OPA_70, 0);
+	lv_obj_set_style_pad_all(body, 2, 0);
+
+	lv_obj_set_style_bg_color(nub, lv_color_hex(COLOR_WHITE), 0);
+	lv_obj_set_style_bg_opa(nub, LV_OPA_70, 0);
+
+	_batt_fill = _box(body, 0, 0, 0, BATT_H - 4);
+	lv_obj_set_style_bg_color(_batt_fill, lv_color_hex(COLOR_WHITE), 0);
+	lv_obj_set_style_bg_opa(_batt_fill, LV_OPA_COVER, 0);
+	lv_obj_set_style_radius(_batt_fill, 1, 0);
+
+	_batt_bolt = _label(parent, &lv_font_montserrat_10, COLOR_WHITE, 0);
+	lv_label_set_text(_batt_bolt, LV_SYMBOL_CHARGE);
+	lv_obj_set_pos(_batt_bolt, BATT_X - 11, BATT_Y - 1);
+}
+
+static void _batt_render(void)
+{
+	int pct = board_battery_percent();
+
+	if (pct < 0) {
+		pct = 0;
+	}
+	lv_obj_set_width(_batt_fill, ((BATT_W - 4) * pct + 50) / 100);
+	_hidden(_batt_bolt, !_charging());
 }
 
 /* ---------- per-phase rendering ---------- */
@@ -669,6 +729,22 @@ static int _beacon_step_idx(uint32_t interval_ms)
 	return best;
 }
 
+static const char *_charge_text(enum board_charge chg)
+{
+	switch (chg) {
+	case BOARD_CHARGE_OFF:
+		return "Not charging";
+	case BOARD_CHARGE_PRE:
+		return "Pre-charging";
+	case BOARD_CHARGE_ON:
+		return "Charging";
+	case BOARD_CHARGE_FULL:
+		return "Full";
+	default:
+		return "Charger unknown";
+	}
+}
+
 static void _menu_text(const struct app_state *s, uint64_t now, char *title,
 		       char *value, char *sub, size_t len)
 {
@@ -677,6 +753,8 @@ static void _menu_text(const struct app_state *s, uint64_t now, char *title,
 	char dur[16];
 	int pct;
 	int16_t temp;
+	uint16_t mv;
+	int16_t ma;
 
 	switch (_menu_idx) {
 	case MENU_MODE:
@@ -741,13 +819,16 @@ static void _menu_text(const struct app_state *s, uint64_t now, char *title,
 		if (pct < 0) {
 			snprintf(value, len, "--");
 		} else {
-			snprintf(value, len, "%d%%", pct);
+			snprintf(value, len, "%s%d%%",
+				 _charging() ? LV_SYMBOL_CHARGE " " : "", pct);
 		}
-		if (temp == INT16_MIN) {
+		if (!board_battery_read(&mv, &ma)) {
 			snprintf(sub, len, "Gauge not responding");
 		} else {
-			snprintf(sub, len, "%d.%d °C", temp / 100,
-				 abs(temp % 100) / 10);
+			snprintf(sub, len, "%s, %+d mA, %u.%02u V, %d °C",
+				 _charge_text(board_charge_state()), ma,
+				 mv / 1000, (mv % 1000) / 10,
+				 temp == INT16_MIN ? 0 : temp / 100);
 		}
 		break;
 	case MENU_PAYLOAD:
@@ -1059,6 +1140,11 @@ static void _tick_cb(lv_timer_t *t)
 		break;
 	default:
 		break;
+	}
+
+	if (++_batt_tick >= BATT_REFRESH) {
+		_batt_tick = 0;
+		_batt_render();
 	}
 
 	if (_menu_open() && ++_menu_tick >= MENU_REFRESH) {

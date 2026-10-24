@@ -65,7 +65,18 @@ static const char *TAG = "board";
 #define TOUCH_ADDR      0x38
 #define TOUCH_REG_STAT  0x02
 
+/* AW32001 charger */
+#define CHG_ADDR        0x49
+#define CHG_REG_PWR_CFG 0x01
+#define CHG_REG_TIMER   0x05
+#define CHG_REG_STATUS  0x08
+#define CHG_CEB_BIT     3
+#define CHG_HIZ_BIT     4
+#define CHG_WD_MASK     0x60
+
 #define GAUGE_ADDR      0x55
+#define GAUGE_REG_VOLT  0x08
+#define GAUGE_REG_CURR  0x0C
 #define GAUGE_REG_TEMP  0x28
 #define GAUGE_REG_RM    0x10
 #define GAUGE_REG_FCC   0x12
@@ -77,6 +88,7 @@ static i2c_master_dev_handle_t _exp0;
 static i2c_master_dev_handle_t _exp1;
 static i2c_master_dev_handle_t _touch;
 static i2c_master_dev_handle_t _gauge;
+static i2c_master_dev_handle_t _chg;
 
 static esp_lcd_panel_io_handle_t _lcd_io;
 static esp_lcd_panel_handle_t _lcd_panel;
@@ -147,6 +159,10 @@ static esp_err_t _i2c_init(void)
 	ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(_i2c_bus, &dev_cfg,
 						      &_touch),
 			    TAG, "touch");
+	dev_cfg.device_address = CHG_ADDR;
+	ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(_i2c_bus, &dev_cfg,
+						      &_chg),
+			    TAG, "charger");
 	dev_cfg.device_address = GAUGE_ADDR;
 	return i2c_master_bus_add_device(_i2c_bus, &dev_cfg, &_gauge);
 }
@@ -241,11 +257,34 @@ static esp_err_t _lcd_init(void)
 	return esp_lcd_panel_disp_on_off(_lcd_panel, true);
 }
 
+/*
+ * Same setup as the Arduino library's NessoBattery::begin(): charging on,
+ * input not in Hi-Z, and the charger watchdog off. With the watchdog on and
+ * nobody feeding it, the charger resets its settings every 160 s.
+ */
+static esp_err_t _charger_init(void)
+{
+	uint8_t timer;
+
+	ESP_RETURN_ON_ERROR(_reg_update(_chg, CHG_REG_PWR_CFG, CHG_CEB_BIT,
+					false),
+			    TAG, "charge enable");
+	ESP_RETURN_ON_ERROR(_reg_update(_chg, CHG_REG_PWR_CFG, CHG_HIZ_BIT,
+					false),
+			    TAG, "hi-z off");
+	ESP_RETURN_ON_ERROR(_reg_read(_chg, CHG_REG_TIMER, &timer, 1), TAG,
+			    "timer");
+	return _reg_write(_chg, CHG_REG_TIMER, timer & ~CHG_WD_MASK);
+}
+
 esp_err_t board_init(void)
 {
 	ESP_RETURN_ON_ERROR(_i2c_init(), TAG, "i2c");
 	ESP_RETURN_ON_ERROR(_expander_init(), TAG, "expander");
 	ESP_RETURN_ON_ERROR(_lcd_init(), TAG, "lcd");
+	if (_charger_init() != ESP_OK) {
+		ESP_LOGW(TAG, "Charger did not answer; charging not configured");
+	}
 	board_backlight_set(true);
 	return ESP_OK;
 }
@@ -325,6 +364,46 @@ int board_battery_percent(void)
 	}
 
 	return ((rm[0] | (rm[1] << 8)) * 100U) / full;
+}
+
+enum board_charge board_charge_state(void)
+{
+	uint8_t status;
+
+	if (_reg_read(_chg, CHG_REG_STATUS, &status, 1) != ESP_OK) {
+		return BOARD_CHARGE_UNKNOWN;
+	}
+
+	return (enum board_charge)((status >> 3) & 0x03);
+}
+
+bool board_battery_read(uint16_t *mv, int16_t *ma)
+{
+	uint8_t v[2];
+	uint8_t c[2];
+
+	if (_reg_read(_gauge, GAUGE_REG_VOLT, v, 2) != ESP_OK ||
+	    _reg_read(_gauge, GAUGE_REG_CURR, c, 2) != ESP_OK) {
+		return false;
+	}
+
+	*mv = v[0] | (v[1] << 8);
+	*ma = (int16_t)(c[0] | (c[1] << 8));
+	return true;
+}
+
+void board_battery_log(void)
+{
+	static const char *const names[] = {"not charging", "pre-charge",
+					    "charging", "full"};
+	enum board_charge chg = board_charge_state();
+	uint16_t mv = 0;
+	int16_t ma = 0;
+	bool gauge = board_battery_read(&mv, &ma);
+
+	ESP_LOGI(TAG, "battery: %d%%, %s%u mV, %d mA, charger %s",
+		 board_battery_percent(), gauge ? "" : "gauge error, ", mv, ma,
+		 chg == BOARD_CHARGE_UNKNOWN ? "not answering" : names[chg]);
 }
 
 int16_t board_battery_temp_centi_c(void)
