@@ -80,6 +80,8 @@ extern const lv_image_dsc_t hubble_logo;
 #define MS_PER_DAY     (24ULL * MS_PER_HOUR)
 
 static lv_display_t *_disp;
+static lv_indev_t *_indev;
+static lv_timer_t *_ui_timer;
 
 static lv_obj_t *_boot;
 static lv_obj_t *_boot_fill;
@@ -147,6 +149,7 @@ static bool _ui_locks_held;
 static bool _menu_open(void);
 static void _hidden(lv_obj_t *o, bool hidden);
 static void _batt_build(lv_obj_t *parent);
+static void _lvgl_idle(void);
 
 static enum app_phase _shown_phase = (enum app_phase)-1;
 static enum app_radio _picked;
@@ -1146,16 +1149,34 @@ static void _screen_set(bool on)
 		board_touch_set_active(true);
 		(void)esp_lcd_panel_disp_sleep(board_lcd_panel(), false);
 		(void)lvgl_port_resume();
+		lv_timer_resume(lv_display_get_refr_timer(_disp));
+		lv_timer_resume(lv_indev_get_read_timer(_indev));
+		lv_timer_resume(_ui_timer);
 		lv_obj_invalidate(lv_screen_active());
 		board_backlight_set(true);
 	} else {
 		_hidden(_picker, true);
 		board_backlight_set(false);
 		(void)esp_lcd_panel_disp_sleep(board_lcd_panel(), true);
-		(void)lvgl_port_stop();
+		_lvgl_idle();
 		board_touch_set_active(false);
 		_ui_locks(false);
 	}
+}
+
+/*
+ * lvgl_port_stop() alone keeps the chip from light-sleeping: with LVGL's
+ * timers disabled, lv_timer_handler() asks to run again in 1 ms, so the port
+ * task wakes on every tick. Pause each timer instead and stop the port's
+ * 5 ms tick; LVGL then reports nothing scheduled and the task sleeps 500 ms.
+ */
+static void _lvgl_idle(void)
+{
+	lv_timer_pause(lv_display_get_refr_timer(_disp));
+	lv_timer_pause(lv_indev_get_read_timer(_indev));
+	lv_timer_pause(_ui_timer);
+	(void)lvgl_port_stop();
+	lv_timer_enable(true);
 }
 
 static void _wake(void)
@@ -1354,6 +1375,7 @@ esp_err_t ui_init(void)
 	}
 
 	indev = lv_indev_create();
+	_indev = indev;
 	lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
 	lv_indev_set_read_cb(indev, _touch_read_cb);
 	lv_indev_set_display(indev, _disp);
@@ -1371,7 +1393,7 @@ esp_err_t ui_init(void)
 	_phase_enter(APP_PHASE_BOOT);
 	_shown_phase = APP_PHASE_BOOT;
 
-	lv_timer_create(_tick_cb, TICK_MS, NULL);
+	_ui_timer = lv_timer_create(_tick_cb, TICK_MS, NULL);
 	lvgl_port_unlock();
 
 	ESP_RETURN_ON_FALSE(xTaskCreate(_key_task, "keys", KEY_TASK_STACK, NULL,
