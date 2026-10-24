@@ -221,8 +221,14 @@ err_stop_timer:
 	return rc;
 }
 
+/* Longest legacy advertising interval the controller accepts */
+#define ADV_INTERVAL_LIMIT_MS          10240U
+
 int ble_adv_interval_set(uint16_t min_ms, uint16_t max_ms)
 {
+	if (max_ms > ADV_INTERVAL_LIMIT_MS) {
+		max_ms = ADV_INTERVAL_LIMIT_MS;
+	}
 	if (min_ms < 20 || max_ms < min_ms) {
 		return -EINVAL;
 	}

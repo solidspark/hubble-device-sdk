@@ -56,6 +56,9 @@ struct app_state {
 	uint64_t beacon_since_ms;
 	uint32_t beacon_interval_ms;
 
+	/* Home Wi-Fi in range: beacons slow to the home interval. */
+	bool home;
+
 	/* Saved location and ephemeris; setup_saved_at_s is 0 if none. */
 	uint64_t setup_saved_at_s;
 	uint8_t setup_sats;

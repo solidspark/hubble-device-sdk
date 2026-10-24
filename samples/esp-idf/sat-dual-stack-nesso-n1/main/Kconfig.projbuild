@@ -36,6 +36,20 @@ menu "Sat Dual Stack Nesso N1 Sample Configuration"
     string "SNTP server"
     default "pool.ntp.org"
 
+    config HUBBLE_SAMPLE_HOME_SCAN_MINUTES
+    int "Minutes between home Wi-Fi checks (0 = off)"
+    default 10
+    range 0 1440
+    help
+        While the Wi-Fi network above is in range, the device is assumed
+        to be at home and beacons less often to save battery. It checks
+        with a short scan this often.
+
+    config HUBBLE_SAMPLE_HOME_BEACON_INTERVAL_MS
+    int "Beacon interval at home, in milliseconds"
+    default 10000
+    range 1000 10000
+
     config HUBBLE_SAMPLE_TZ
     string "Time zone for pass times (POSIX TZ)"
     default "PST8PDT,M3.2.0,M11.1.0"

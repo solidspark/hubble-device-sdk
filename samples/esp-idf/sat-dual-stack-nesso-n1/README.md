@@ -51,7 +51,9 @@ while the battery charges.
 - **Tap the marker at the top of the ring** to choose **Satellite** (satellite
   at each pass, BLE beacon between passes) or **Terrestrial** (BLE beacon only).
 - **Click a front button** to close the menu, or to turn the screen off or on
-  when the menu is closed. The radio keeps running with the screen off.
+  when the menu is closed. The radio keeps running with the screen off. The
+  screen also turns off after 10 s idle; only a front button wakes it, since
+  the touch controller drops to low-power monitor mode while dark.
 - **Double-click a front button** to open or close the menu.
 
 The menu shows one value at a time: the value on the left, **+** and **−** on
@@ -141,6 +143,8 @@ This sample exposes the following options (via `idf.py menuconfig`, under
 | `CONFIG_HUBBLE_SAMPLE_SNTP_SERVER` | `"pool.ntp.org"` | SNTP server. |
 | `CONFIG_HUBBLE_SAMPLE_TZ` | `"PST8PDT,M3.2.0,M11.1.0"` | Time zone for pass times, as a POSIX TZ string. |
 | `CONFIG_HUBBLE_SAMPLE_TZ_LABEL` | `"PT"` | Label shown after pass times. |
+| `CONFIG_HUBBLE_SAMPLE_HOME_SCAN_MINUTES` | `10` | How often to scan for the Wi-Fi network above. While it is in range the device is at home and beacons less often. 0 turns this off. |
+| `CONFIG_HUBBLE_SAMPLE_HOME_BEACON_INTERVAL_MS` | `10000` | Beacon interval at home. |
 | `CONFIG_HUBBLE_SAMPLE_SETUP_MAX_AGE_DAYS` | `7` | Days a saved setup is used before the device waits for the companion again. |
 
 ## Build-time Provisioning

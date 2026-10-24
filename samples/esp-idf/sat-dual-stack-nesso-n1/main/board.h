@@ -42,6 +42,9 @@ esp_lcd_panel_handle_t board_lcd_panel(void);
  */
 bool board_touch_read(uint16_t *x, uint16_t *y);
 
+/** @brief Switch the touch controller between active and low-power monitor. */
+void board_touch_set_active(bool active);
+
 void board_led_set(bool on);
 
 /** @brief Turn the LCD backlight on or off; the panel keeps its contents. */

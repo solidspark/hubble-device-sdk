@@ -65,6 +65,8 @@ static const char *TAG = "board";
 
 #define TOUCH_ADDR      0x38
 #define TOUCH_REG_STAT  0x02
+/* FT6336 power mode: 0 active, 1 monitor (low power). */
+#define TOUCH_REG_PMODE 0xA5
 
 /* AW32001 charger */
 #define CHG_ADDR        0x49
@@ -336,6 +338,16 @@ esp_lcd_panel_io_handle_t board_lcd_io(void)
 esp_lcd_panel_handle_t board_lcd_panel(void)
 {
 	return _lcd_panel;
+}
+
+/*
+ * Monitor mode rather than hibernate: leaving hibernate needs the
+ * controller's reset line, which this board does not route to a pin the
+ * sample controls.
+ */
+void board_touch_set_active(bool active)
+{
+	(void)_reg_write(_touch, TOUCH_REG_PMODE, active ? 0 : 1);
 }
 
 bool board_touch_read(uint16_t *x, uint16_t *y)

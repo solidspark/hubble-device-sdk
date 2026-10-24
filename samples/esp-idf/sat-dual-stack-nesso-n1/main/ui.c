@@ -53,7 +53,7 @@ extern const lv_image_dsc_t hubble_logo;
 
 /* Front key: a click is a short press; two within the gap is a double. */
 #define KEY_POLL_MS    20
-/* With the screen off the key task also polls touch, so a tap still wakes it. */
+/* Slower key polling while dark; only the button wakes the screen then. */
 #define KEY_POLL_OFF_MS 50
 #define KEY_CLICK_MS   500
 #define KEY_DOUBLE_MS  350
@@ -137,7 +137,6 @@ static int _menu_tick;
 static bool _setup_armed;
 
 static bool _screen_off;
-static volatile bool _swallow_touch;
 static uint32_t _last_activity;
 
 /* Held while the screen is on so drawing and touch stay responsive. */
@@ -740,8 +739,9 @@ static bool _menu_editable(int idx, const struct app_state *s)
 	case MENU_PASS:
 		return s->pass_count > 1;
 	case MENU_PACKETS:
-	case MENU_BEACON:
 		return true;
+	case MENU_BEACON:
+		return !s->home;
 	case MENU_SETUP:
 		return s->setup_saved_at_s != 0;
 	default:
@@ -838,8 +838,12 @@ static void _menu_text(const struct app_state *s, uint64_t now, char *title,
 		snprintf(value, len, "%lu.%lu",
 			 (unsigned long)s->beacon_interval_ms / 1000,
 			 (unsigned long)(s->beacon_interval_ms % 1000) / 100);
-		snprintf(sub, len, "seconds, BLE %+d dBm",
-			 CONFIG_BT_LE_DFT_TX_POWER_LEVEL_DBM_EFF);
+		if (s->home) {
+			snprintf(sub, len, "seconds; home Wi-Fi in range");
+		} else {
+			snprintf(sub, len, "seconds, BLE %+d dBm",
+				 CONFIG_BT_LE_DFT_TX_POWER_LEVEL_DBM_EFF);
+		}
 		break;
 	case MENU_TODAY:
 		snprintf(title, len, "BEACONS TODAY");
@@ -1139,6 +1143,7 @@ static void _screen_set(bool on)
 
 	if (on) {
 		_ui_locks(true);
+		board_touch_set_active(true);
 		(void)esp_lcd_panel_disp_sleep(board_lcd_panel(), false);
 		(void)lvgl_port_resume();
 		lv_obj_invalidate(lv_screen_active());
@@ -1148,17 +1153,15 @@ static void _screen_set(bool on)
 		board_backlight_set(false);
 		(void)esp_lcd_panel_disp_sleep(board_lcd_panel(), true);
 		(void)lvgl_port_stop();
+		board_touch_set_active(false);
 		_ui_locks(false);
 	}
 }
 
-static void _wake(bool by_touch)
+static void _wake(void)
 {
 	if (!lvgl_port_lock(0)) {
 		return;
-	}
-	if (by_touch) {
-		_swallow_touch = true;
 	}
 	_screen_set(true);
 	lvgl_port_unlock();
@@ -1202,8 +1205,6 @@ static void _key_task(void *arg)
 	uint32_t down_at = 0;
 	uint32_t up_at = 0;
 	int clicks = 0;
-	uint16_t tx;
-	uint16_t ty;
 
 	for (;;) {
 		uint32_t now = esp_timer_get_time() / 1000;
@@ -1211,12 +1212,8 @@ static void _key_task(void *arg)
 
 		/* LVGL is paused while dark, so wake-ups are watched from here. */
 		app_state_get(&s);
-		if (_screen_off) {
-			if (s.phase != seen) {
-				_wake(false);
-			} else if (board_touch_read(&tx, &ty)) {
-				_wake(true);
-			}
+		if (_screen_off && s.phase != seen) {
+			_wake();
 		}
 		seen = s.phase;
 
@@ -1297,17 +1294,6 @@ static void _touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 	static uint16_t y;
 
 	bool touched = board_touch_read(&x, &y);
-
-	/*
-	 * A tap on a dark screen only wakes it; the press is swallowed until
-	 * the finger lifts so it cannot hit whatever is under it.
-	 */
-	if (_swallow_touch) {
-		if (!touched) {
-			_swallow_touch = false;
-		}
-		touched = false;
-	}
 
 	if (touched) {
 		_last_activity = lv_tick_get();

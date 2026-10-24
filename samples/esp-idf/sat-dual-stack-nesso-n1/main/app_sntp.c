@@ -41,6 +41,9 @@ static const char *TAG = "sntp";
 static EventGroupHandle_t _events;
 static int _retries;
 
+/* Channel the home network was found on at boot; 0 scans all channels. */
+static uint8_t _home_channel;
+
 static void _wifi_event_cb(void *arg, esp_event_base_t base, int32_t id,
 			   void *data)
 {
@@ -119,6 +122,44 @@ static uint64_t _http_time_get(void)
 	return (uint64_t)tv.tv_sec * 1000ULL;
 }
 
+bool app_wifi_home_seen(void)
+{
+	wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
+	wifi_scan_config_t scan = {
+		.ssid = (uint8_t *)CONFIG_HUBBLE_SAMPLE_WIFI_SSID,
+		.channel = _home_channel,
+		.scan_type = WIFI_SCAN_TYPE_ACTIVE,
+		.scan_time.active = {.min = 50, .max = 150},
+	};
+	uint16_t found = 0;
+	esp_err_t err;
+
+	if (!app_sntp_configured()) {
+		return false;
+	}
+
+	err = esp_netif_init();
+	if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) {
+		err = esp_event_loop_create_default();
+	}
+	if ((err != ESP_OK && err != ESP_ERR_INVALID_STATE) ||
+	    esp_wifi_init(&init_cfg) != ESP_OK) {
+		return false;
+	}
+
+	if (esp_wifi_set_mode(WIFI_MODE_STA) == ESP_OK &&
+	    esp_wifi_start() == ESP_OK &&
+	    esp_wifi_scan_start(&scan, true) == ESP_OK) {
+		(void)esp_wifi_scan_get_ap_num(&found);
+	}
+	(void)esp_wifi_clear_ap_list();
+	(void)esp_wifi_stop();
+	(void)esp_wifi_deinit();
+
+	ESP_LOGI(TAG, "Home Wi-Fi %s", found ? "in range" : "not seen");
+	return found > 0;
+}
+
 bool app_sntp_configured(void)
 {
 	return strlen(CONFIG_HUBBLE_SAMPLE_WIFI_SSID) > 0;
@@ -193,6 +234,14 @@ uint64_t app_sntp_time_get(void)
 	if (!(bits & BIT_GOT_IP)) {
 		ESP_LOGW(TAG, "Could not join Wi-Fi");
 		goto out_stop;
+	}
+
+	{
+		wifi_ap_record_t ap;
+
+		if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+			_home_channel = ap.primary;
+		}
 	}
 
 	if (esp_netif_sntp_init(&sntp_cfg) == ESP_OK) {
