@@ -63,6 +63,9 @@ extern const lv_image_dsc_t hubble_logo;
 #define BATT_Y         6
 #define BATT_REFRESH   50
 
+/* The backlight turns off after this long with no touch or key press. */
+#define SCREEN_IDLE_MS 10000
+
 #define MENU_SPLIT_X   158
 #define MENU_TEXT_X    20
 #define MENU_TEXT_W    (MENU_SPLIT_X - MENU_TEXT_X - 4)
@@ -127,6 +130,8 @@ static int _menu_pass;
 static int _menu_tick;
 
 static bool _screen_off;
+static volatile bool _wake_request;
+static uint32_t _last_activity;
 
 static bool _menu_open(void);
 static void _hidden(lv_obj_t *o, bool hidden);
@@ -1047,6 +1052,7 @@ static void _menu_show(bool show)
 
 static void _screen_set(bool on)
 {
+	_last_activity = lv_tick_get();
 	_screen_off = !on;
 	board_backlight_set(on);
 	if (!on) {
@@ -1060,6 +1066,7 @@ static void _key_click(void)
 	if (!lvgl_port_lock(0)) {
 		return;
 	}
+	_last_activity = lv_tick_get();
 	if (!_screen_off && _menu_open()) {
 		_menu_show(false);
 	} else {
@@ -1073,6 +1080,7 @@ static void _key_double(void)
 	if (!lvgl_port_lock(0)) {
 		return;
 	}
+	_last_activity = lv_tick_get();
 	if (_screen_off) {
 		_screen_set(true);
 		_menu_show(true);
@@ -1121,7 +1129,19 @@ static void _tick_cb(lv_timer_t *t)
 	app_state_get(&s);
 	if (s.phase != _shown_phase) {
 		_phase_enter(s.phase);
+		/* Show the moment a pass starts, ends or setup finishes. */
+		if (_shown_phase != (enum app_phase)-1) {
+			_screen_set(true);
+		}
 		_shown_phase = s.phase;
+	}
+
+	if (_wake_request) {
+		_wake_request = false;
+		_screen_set(true);
+	} else if (!_screen_off &&
+		   lv_tick_elaps(_last_activity) > SCREEN_IDLE_MS) {
+		_screen_set(false);
 	}
 
 	now = app_time_ms();
@@ -1160,8 +1180,25 @@ static void _touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 	static uint16_t x;
 	static uint16_t y;
 
-	/* A dark screen must not take taps meant for nothing. */
-	if (!_screen_off && board_touch_read(&x, &y)) {
+	static bool waking;
+	bool touched = board_touch_read(&x, &y);
+
+	/*
+	 * A tap on a dark screen only wakes it; the press is swallowed until
+	 * the finger lifts so it cannot hit whatever is under it.
+	 */
+	if (touched && (_screen_off || waking)) {
+		if (_screen_off) {
+			_wake_request = true;
+		}
+		waking = true;
+		touched = false;
+	} else if (!touched) {
+		waking = false;
+	}
+
+	if (touched) {
+		_last_activity = lv_tick_get();
 		data->state = LV_INDEV_STATE_PRESSED;
 	} else {
 		data->state = LV_INDEV_STATE_RELEASED;
