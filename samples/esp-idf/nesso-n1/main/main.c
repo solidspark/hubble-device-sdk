@@ -37,9 +37,11 @@ static const char *APP_TAG = "main";
 #define US_PER_MS          1000U
 #define MS_PER_DAY         (24ULL * 60 * 60 * MS_PER_SEC)
 
-/* HUBBLE_SAT_RELIABILITY_HIGH: 16 packets, 10 s apart (src/hubble_sat.c) */
-#define SAT_TX_RETRIES     16U
-#define SAT_TX_INTERVAL_S  10U
+/* Retry counts and spacing per reliability mode (src/hubble_sat.c) */
+#define SAT_HIGH_RETRIES   16U
+#define SAT_HIGH_INTERVAL  10U
+#define SAT_NORM_RETRIES   8U
+#define SAT_NORM_INTERVAL  20U
 #define SAT_MAX_DRIFT_MS   (90U * 60U * MS_PER_SEC)
 
 /* Midpoint of the beacon's 1000-1200 ms advertising interval */
@@ -47,9 +49,6 @@ static const char *APP_TAG = "main";
 
 #define DONE_SCREEN_MS     2600U
 #define PASS_SEARCH_LIMIT  8
-
-/* Temperature (int16, centi-degC, big endian) + battery % + reserved */
-#define SAT_PAYLOAD_LEN    4U
 
 /* Device location and sat orbital parameters */
 struct hubble_sat_device_pos device_pos;
@@ -74,7 +73,8 @@ static esp_timer_handle_t _sat_timer;
 static struct app_state _state = {
 	.phase = APP_PHASE_BOOT,
 	.radio = APP_RADIO_SAT,
-	.tx_interval_s = SAT_TX_INTERVAL_S,
+	.sat_high = true,
+	.tx_interval_s = SAT_HIGH_INTERVAL,
 	.beacon_interval_ms = BEACON_INTERVAL_MS,
 };
 static portMUX_TYPE _state_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -101,6 +101,31 @@ void app_radio_request(enum app_radio radio)
 	if (changed) {
 		(void)xQueueSend(_evt_q, &evt, 0);
 	}
+}
+
+void app_sat_high_set(bool high)
+{
+	portENTER_CRITICAL(&_state_lock);
+	_state.sat_high = high;
+	portEXIT_CRITICAL(&_state_lock);
+}
+
+void app_beacon_interval_set(uint32_t interval_ms)
+{
+	uint64_t now = app_time_ms();
+
+	portENTER_CRITICAL(&_state_lock);
+	/* Bank the beacons sent at the old rate before the rate changes. */
+	if (_state.beacon_since_ms != 0 && now > _state.beacon_since_ms) {
+		_state.beacons_before += (now - _state.beacon_since_ms) /
+					 _state.beacon_interval_ms;
+		_state.beacon_since_ms = now;
+	}
+	_state.beacon_interval_ms = interval_ms;
+	portEXIT_CRITICAL(&_state_lock);
+
+	(void)ble_adv_interval_set(interval_ms - interval_ms / 11,
+				   interval_ms + interval_ms / 11);
 }
 
 uint64_t app_time_ms(void)
@@ -148,7 +173,7 @@ static void _beacons_stop(uint64_t now)
 }
 
 /* Mirrors the SDK's drift compensation so the UI shows the real count. */
-static uint8_t _sat_tx_total(uint64_t now)
+static uint8_t _sat_tx_total(uint64_t now, uint8_t retries, uint8_t interval_s)
 {
 	uint64_t drift_ms = ((now - _synced_ms) *
 			     CONFIG_HUBBLE_SAT_NETWORK_DEVICE_TDR) /
@@ -158,7 +183,7 @@ static uint8_t _sat_tx_total(uint64_t now)
 		drift_ms = SAT_MAX_DRIFT_MS;
 	}
 
-	return SAT_TX_RETRIES + drift_ms / (SAT_TX_INTERVAL_S * MS_PER_SEC);
+	return retries + drift_ms / (interval_s * MS_PER_SEC);
 }
 
 /* Fills the next few future passes; returns how many were found. */
@@ -199,7 +224,7 @@ static uint8_t _passes_compute(uint64_t now,
 	return n;
 }
 
-static void _payload_build(uint8_t payload[SAT_PAYLOAD_LEN])
+void app_payload_build(uint8_t payload[APP_PAYLOAD_LEN])
 {
 	int16_t temp = board_battery_temp_centi_c();
 	int battery = board_battery_percent();
@@ -239,7 +264,9 @@ static void _satellite_run(void)
 {
 	struct hubble_sat_pass_info pass = {0};
 	struct hubble_sat_packet packet = {0};
-	uint8_t payload[SAT_PAYLOAD_LEN];
+	uint8_t payload[APP_PAYLOAD_LEN];
+	enum hubble_sat_transmission_mode mode;
+	uint8_t interval_s;
 	uint64_t now_ms = hubble_time_get();
 	uint64_t wait_ms;
 	uint8_t total;
@@ -286,7 +313,7 @@ static void _satellite_run(void)
 		ESP_LOGE(APP_TAG, "Failed to stop advertising, ret: %d", ret);
 	}
 
-	_payload_build(payload);
+	app_payload_build(payload);
 	ret = hubble_sat_packet_get(&packet, payload, sizeof(payload));
 	if (ret != 0) {
 		ESP_LOGE(APP_TAG, "Failed to get sat packet, ret: %d", ret);
@@ -294,18 +321,25 @@ static void _satellite_run(void)
 	}
 
 	now_ms = hubble_time_get();
-	total = _sat_tx_total(now_ms);
 
 	portENTER_CRITICAL(&_state_lock);
+	mode = _state.sat_high ? HUBBLE_SAT_RELIABILITY_HIGH
+			       : HUBBLE_SAT_RELIABILITY_NORMAL;
+	interval_s = _state.sat_high ? SAT_HIGH_INTERVAL : SAT_NORM_INTERVAL;
+	total = _sat_tx_total(now_ms,
+			      _state.sat_high ? SAT_HIGH_RETRIES
+					      : SAT_NORM_RETRIES,
+			      interval_s);
 	_state.tx_start_ms = now_ms;
 	_state.tx_total = total;
+	_state.tx_interval_s = interval_s;
 	_state.phase = APP_PHASE_TX;
 	portEXIT_CRITICAL(&_state_lock);
 
 	ESP_LOGI(APP_TAG, "Starting satellite transmission (%u packets)...",
 		 total);
 	board_led_set(true);
-	ret = hubble_sat_packet_send(&packet, HUBBLE_SAT_RELIABILITY_HIGH);
+	ret = hubble_sat_packet_send(&packet, mode);
 	board_led_set(false);
 	if (ret != 0) {
 		ESP_LOGE(APP_TAG, "Failed to send sat packet, ret: %d", ret);

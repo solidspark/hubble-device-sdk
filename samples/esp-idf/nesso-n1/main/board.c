@@ -48,8 +48,14 @@ static const char *TAG = "board";
 #define EXP_REG_DIR     0x03
 #define EXP_REG_OUT     0x05
 #define EXP_REG_HIGH_Z  0x07
-#define EXP_REG_IN_DFLT 0x09
-#define EXP_REG_INT_MSK 0x11
+#define EXP_REG_PULL_EN 0x0B
+#define EXP_REG_PULL_UP 0x0D
+#define EXP_REG_INPUT   0x0F
+
+/* Expander 0 (0x43) pins; the keys pull low when pressed */
+#define EXP0_KEY1       0
+#define EXP0_KEY2       1
+#define EXP0_KEYS_MASK  ((1U << EXP0_KEY1) | (1U << EXP0_KEY2))
 
 /* Expander 1 (0x44) pins */
 #define EXP1_LCD_RESET  1
@@ -67,6 +73,7 @@ static const char *TAG = "board";
 #define I2C_TIMEOUT_MS  50
 
 static i2c_master_bus_handle_t _i2c_bus;
+static i2c_master_dev_handle_t _exp0;
 static i2c_master_dev_handle_t _exp1;
 static i2c_master_dev_handle_t _touch;
 static i2c_master_dev_handle_t _gauge;
@@ -128,6 +135,10 @@ static esp_err_t _i2c_init(void)
 	ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_cfg, &_i2c_bus), TAG,
 			    "i2c bus");
 
+	dev_cfg.device_address = EXP0_ADDR;
+	ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(_i2c_bus, &dev_cfg,
+						      &_exp0),
+			    TAG, "exp0");
 	dev_cfg.device_address = EXP1_ADDR;
 	ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(_i2c_bus, &dev_cfg,
 						      &_exp1),
@@ -141,11 +152,23 @@ static esp_err_t _i2c_init(void)
 }
 
 /*
- * Expander 1 also drives POWEROFF (P0), so only the pins this board file
- * owns are touched; the rest keep their reset state (inputs).
+ * Expander 1 also drives POWEROFF (P0) and expander 0 the LoRa enables, so
+ * only the pins this board file owns are touched; the rest keep their reset
+ * state (inputs).
  */
 static esp_err_t _expander_init(void)
 {
+	for (uint8_t key = EXP0_KEY1; key <= EXP0_KEY2; key++) {
+		ESP_RETURN_ON_ERROR(_reg_update(_exp0, EXP_REG_DIR, key, false),
+				    TAG, "key dir");
+		ESP_RETURN_ON_ERROR(_reg_update(_exp0, EXP_REG_PULL_UP, key,
+						true),
+				    TAG, "key pull-up");
+		ESP_RETURN_ON_ERROR(_reg_update(_exp0, EXP_REG_PULL_EN, key,
+						true),
+				    TAG, "key pull enable");
+	}
+
 	ESP_RETURN_ON_ERROR(_exp_output(_exp1, EXP1_LCD_BL, false), TAG, "bl");
 	ESP_RETURN_ON_ERROR(_exp_output(_exp1, EXP1_LED, true), TAG, "led");
 	return _exp_output(_exp1, EXP1_LCD_RESET, true);
@@ -223,7 +246,8 @@ esp_err_t board_init(void)
 	ESP_RETURN_ON_ERROR(_i2c_init(), TAG, "i2c");
 	ESP_RETURN_ON_ERROR(_expander_init(), TAG, "expander");
 	ESP_RETURN_ON_ERROR(_lcd_init(), TAG, "lcd");
-	return _reg_update(_exp1, EXP_REG_OUT, EXP1_LCD_BL, true);
+	board_backlight_set(true);
+	return ESP_OK;
 }
 
 esp_lcd_panel_io_handle_t board_lcd_io(void)
@@ -266,6 +290,22 @@ bool board_touch_read(uint16_t *x, uint16_t *y)
 void board_led_set(bool on)
 {
 	(void)_reg_update(_exp1, EXP_REG_OUT, EXP1_LED, !on);
+}
+
+void board_backlight_set(bool on)
+{
+	(void)_reg_update(_exp1, EXP_REG_OUT, EXP1_LCD_BL, on);
+}
+
+bool board_key_pressed(void)
+{
+	uint8_t in;
+
+	if (_reg_read(_exp0, EXP_REG_INPUT, &in, 1) != ESP_OK) {
+		return false;
+	}
+
+	return (in & EXP0_KEYS_MASK) != EXP0_KEYS_MASK;
 }
 
 int board_battery_percent(void)

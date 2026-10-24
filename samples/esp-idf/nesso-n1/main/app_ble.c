@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -95,6 +96,15 @@ static esp_timer_handle_t _ble_timer;
 /* Task notification for adv update */
 static TaskHandle_t _adv_refresh_task_handle;
 
+static uint16_t _adv_itvl_min_ms = ADV_INTERVAL_MIN_MS;
+static uint16_t _adv_itvl_max_ms = ADV_INTERVAL_MAX_MS;
+
+/*
+ * The connectable provisioning advertisement must never be restarted as a
+ * beacon, so interval changes only restart advertising while this is set.
+ */
+static volatile bool _beacon_on;
+
 /* BLE adv specifics */
 static uint16_t _conn_adv_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint8_t _beacon_adv_buffer[HUBBLE_BLE_BUFFER_LEN];
@@ -157,8 +167,8 @@ int ble_adv_start(void)
 	struct ble_gap_adv_params adv_params = {
 		.conn_mode = BLE_GAP_CONN_MODE_NON,
 		.disc_mode = BLE_GAP_DISC_MODE_GEN,
-		.itvl_min = BLE_GAP_ADV_ITVL_MS(ADV_INTERVAL_MIN_MS),
-		.itvl_max = BLE_GAP_ADV_ITVL_MS(ADV_INTERVAL_MAX_MS),
+		.itvl_min = BLE_GAP_ADV_ITVL_MS(_adv_itvl_min_ms),
+		.itvl_max = BLE_GAP_ADV_ITVL_MS(_adv_itvl_max_ms),
 	};
 
 	/* Start BLE adv refresh timer */
@@ -202,6 +212,7 @@ int ble_adv_start(void)
 		goto err_stop_timer;
 	}
 
+	_beacon_on = true;
 	return 0;
 
 err_stop_timer:
@@ -209,8 +220,26 @@ err_stop_timer:
 	return rc;
 }
 
+int ble_adv_interval_set(uint16_t min_ms, uint16_t max_ms)
+{
+	if (min_ms < 20 || max_ms < min_ms) {
+		return -EINVAL;
+	}
+
+	_adv_itvl_min_ms = min_ms;
+	_adv_itvl_max_ms = max_ms;
+
+	/* The refresh task restarts advertising safely if it is running. */
+	if (_beacon_on && _adv_refresh_task_handle != NULL) {
+		xTaskNotifyGive(_adv_refresh_task_handle);
+	}
+	return 0;
+}
+
 int ble_adv_stop(void)
 {
+	_beacon_on = false;
+
 	/* if already stop, do not call again */
 	if (!ble_gap_adv_active()) {
 		return 0;

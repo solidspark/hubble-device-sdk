@@ -44,6 +44,12 @@ bool board_touch_read(uint16_t *x, uint16_t *y);
 
 void board_led_set(bool on);
 
+/** @brief Turn the LCD backlight on or off; the panel keeps its contents. */
+void board_backlight_set(bool on);
+
+/** @brief true while either front key (KEY1 or KEY2) is held down. */
+bool board_key_pressed(void);
+
 /**
  * @brief Battery state of charge from the BQ27220 fuel gauge.
  *

@@ -6,11 +6,16 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "esp_timer.h"
 #include "lvgl.h"
 
 #include "app_state.h"
@@ -44,6 +49,18 @@ extern const lv_image_dsc_t hubble_logo;
 #define RIPPLE_GAP_MS  1200
 #define BOOT_FILL_MS   1600
 
+/* Front key: a click is a short press; two within the gap is a double. */
+#define KEY_POLL_MS    20
+#define KEY_CLICK_MS   500
+#define KEY_DOUBLE_MS  350
+#define KEY_TASK_STACK 3072
+#define KEY_TASK_PRIO  3
+
+#define MENU_SPLIT_X   158
+#define MENU_TEXT_X    20
+#define MENU_TEXT_W    (MENU_SPLIT_X - MENU_TEXT_X - 4)
+#define MENU_REFRESH   5
+
 #define MS_PER_SEC     1000ULL
 #define MS_PER_HOUR    (3600ULL * MS_PER_SEC)
 #define MS_PER_DAY     (24ULL * MS_PER_HOUR)
@@ -70,6 +87,37 @@ static lv_obj_t *_info2;
 
 static lv_obj_t *_picker;
 static lv_obj_t *_pick_hl;
+
+enum menu_item {
+	MENU_MODE,
+	MENU_PASS,
+	MENU_PACKETS,
+	MENU_SAT_POWER,
+	MENU_BEACON,
+	MENU_TODAY,
+	MENU_BATTERY,
+	MENU_PAYLOAD,
+	MENU_COUNT,
+};
+
+/* Beacon interval choices; 1100 ms is the sample's 1000-1200 ms default. */
+static const uint32_t _beacon_steps_ms[] = {500, 1100, 2000, 5000, 10000};
+#define BEACON_STEPS (int)(sizeof(_beacon_steps_ms) / sizeof(_beacon_steps_ms[0]))
+
+static lv_obj_t *_menu;
+static lv_obj_t *_menu_title;
+static lv_obj_t *_menu_value;
+static lv_obj_t *_menu_sub;
+static lv_obj_t *_menu_plus;
+static lv_obj_t *_menu_minus;
+static lv_obj_t *_menu_dots[MENU_COUNT];
+static int _menu_idx;
+static int _menu_pass;
+static int _menu_tick;
+
+static bool _screen_off;
+
+static bool _menu_open(void);
 
 static enum app_phase _shown_phase = (enum app_phase)-1;
 static enum app_radio _picked;
@@ -240,8 +288,9 @@ static void _zen_clicked_cb(lv_event_t *e)
 	struct app_state s;
 
 	app_state_get(&s);
-	if (s.phase != APP_PHASE_COUNTDOWN &&
-	    s.phase != APP_PHASE_TERRESTRIAL) {
+	if ((s.phase != APP_PHASE_COUNTDOWN &&
+	     s.phase != APP_PHASE_TERRESTRIAL) ||
+	    _menu_open()) {
 		return;
 	}
 
@@ -568,11 +617,7 @@ static void _render_done(const struct app_state *s)
 static void _render_terrestrial(const struct app_state *s, uint64_t now)
 {
 	char buf[24];
-	uint32_t count = s->beacons_before;
-
-	if (s->beacon_since_ms != 0 && now > s->beacon_since_ms) {
-		count += (now - s->beacon_since_ms) / s->beacon_interval_ms;
-	}
+	uint32_t count = app_beacons_today(s, now);
 
 	if (count != _last_count) {
 		if (_last_count != UINT32_MAX &&
@@ -592,6 +637,382 @@ static void _render_terrestrial(const struct app_state *s, uint64_t now)
 		 (unsigned long)(s->beacon_interval_ms % 1000) / 100);
 	_label_set(_info1, buf);
 	_label_set(_info2, "BLE  0 DBM");
+}
+
+/* ---------- N1 menu: one value at a time, +/- on the right ---------- */
+
+static bool _menu_editable(int idx, const struct app_state *s)
+{
+	switch (idx) {
+	case MENU_MODE:
+		return s->phase == APP_PHASE_COUNTDOWN ||
+		       s->phase == APP_PHASE_TERRESTRIAL;
+	case MENU_PASS:
+		return s->pass_count > 1;
+	case MENU_PACKETS:
+	case MENU_BEACON:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static int _beacon_step_idx(uint32_t interval_ms)
+{
+	int best = 0;
+
+	for (int i = 1; i < BEACON_STEPS; i++) {
+		if (_beacon_steps_ms[i] <= interval_ms) {
+			best = i;
+		}
+	}
+	return best;
+}
+
+static void _menu_text(const struct app_state *s, uint64_t now, char *title,
+		       char *value, char *sub, size_t len)
+{
+	uint8_t payload[APP_PAYLOAD_LEN];
+	bool long_fmt;
+	char dur[16];
+	int pct;
+	int16_t temp;
+
+	switch (_menu_idx) {
+	case MENU_MODE:
+		snprintf(title, len, "MODE");
+		snprintf(value, len, s->radio == APP_RADIO_SAT ? "SAT" : "BLE");
+		snprintf(sub, len, s->radio == APP_RADIO_SAT
+					   ? "Satellite at each pass, BLE "
+					     "beacon between"
+					   : "BLE beacon only");
+		break;
+	case MENU_PASS:
+		if (s->pass_count == 0 || now == 0) {
+			snprintf(title, len, "NEXT PASS");
+			snprintf(value, len, "--:--");
+			snprintf(sub, len, "Not provisioned");
+			break;
+		}
+		if (_menu_pass >= s->pass_count) {
+			_menu_pass = s->pass_count - 1;
+		}
+		snprintf(title, len, "PASS %d OF %u", _menu_pass + 1,
+			 s->pass_count);
+		_fmt_utc_clock(value, len, s->pass_start_ms[_menu_pass]);
+		_fmt_duration(dur, sizeof(dur),
+			      s->pass_start_ms[_menu_pass] > now
+				      ? s->pass_start_ms[_menu_pass] - now
+				      : 0,
+			      &long_fmt);
+		snprintf(sub, len, "UTC, in %s, %.0f° max", dur,
+			 s->pass_elevation[_menu_pass]);
+		break;
+	case MENU_PACKETS:
+		snprintf(title, len, "PACKETS PER PASS");
+		snprintf(value, len, "%u", s->sat_high ? 16U : 8U);
+		snprintf(sub, len, s->sat_high ? "10 s apart, high reliability"
+					       : "20 s apart, normal "
+						 "reliability");
+		break;
+	case MENU_SAT_POWER:
+		/* The ESP32 port transmits at its 20 dBm maximum (radio.c). */
+		snprintf(title, len, "SAT TX POWER");
+		snprintf(value, len, "20");
+		snprintf(sub, len, "dBm at the chip; antenna gain not "
+				   "included");
+		break;
+	case MENU_BEACON:
+		snprintf(title, len, "BEACON EVERY");
+		snprintf(value, len, "%lu.%lu",
+			 (unsigned long)s->beacon_interval_ms / 1000,
+			 (unsigned long)(s->beacon_interval_ms % 1000) / 100);
+		snprintf(sub, len, "seconds, BLE 0 dBm");
+		break;
+	case MENU_TODAY:
+		snprintf(title, len, "BEACONS TODAY");
+		_fmt_thousands(value, len, app_beacons_today(s, now));
+		snprintf(sub, len, "Estimate, UTC day");
+		break;
+	case MENU_BATTERY:
+		pct = board_battery_percent();
+		temp = board_battery_temp_centi_c();
+		snprintf(title, len, "BATTERY");
+		if (pct < 0) {
+			snprintf(value, len, "--");
+		} else {
+			snprintf(value, len, "%d%%", pct);
+		}
+		if (temp == INT16_MIN) {
+			snprintf(sub, len, "Gauge not responding");
+		} else {
+			snprintf(sub, len, "%d.%d °C", temp / 100,
+				 abs(temp % 100) / 10);
+		}
+		break;
+	case MENU_PAYLOAD:
+		app_payload_build(payload);
+		snprintf(title, len, "PAYLOAD");
+		snprintf(value, len, "%u B", APP_PAYLOAD_LEN);
+		snprintf(sub, len, "%02X%02X %02X %02X  temp, battery",
+			 payload[0], payload[1], payload[2], payload[3]);
+		break;
+	default:
+		break;
+	}
+}
+
+static void _menu_render(void)
+{
+	char title[32];
+	char value[24];
+	char sub[48];
+	struct app_state s;
+	bool editable;
+	const lv_font_t *font = &lv_font_montserrat_48;
+
+	app_state_get(&s);
+	_menu_text(&s, app_time_ms(), title, value, sub, sizeof(title));
+
+	/* Fall back to the smaller face when the value would not fit. */
+	if (lv_text_get_width(value, strlen(value), font, 0) > MENU_TEXT_W) {
+		font = &lv_font_montserrat_28;
+	}
+	lv_obj_set_style_text_font(_menu_value, font, 0);
+	_label_set(_menu_title, title);
+	_label_set(_menu_value, value);
+	_label_set(_menu_sub, sub);
+
+	editable = _menu_editable(_menu_idx, &s);
+	lv_obj_set_style_opa(_menu_plus, editable ? LV_OPA_COVER : LV_OPA_20,
+			     0);
+	lv_obj_set_style_opa(_menu_minus, editable ? LV_OPA_COVER : LV_OPA_20,
+			     0);
+
+	for (int i = 0; i < MENU_COUNT; i++) {
+		lv_obj_set_style_bg_color(_menu_dots[i],
+					  lv_color_hex(i == _menu_idx
+							       ? COLOR_WHITE
+							       : 0x444444),
+					  0);
+	}
+}
+
+static void _menu_step(int dir)
+{
+	struct app_state s;
+	int i;
+
+	app_state_get(&s);
+	if (!_menu_editable(_menu_idx, &s)) {
+		return;
+	}
+
+	switch (_menu_idx) {
+	case MENU_MODE:
+		app_radio_request(s.radio == APP_RADIO_SAT ? APP_RADIO_TER
+							   : APP_RADIO_SAT);
+		break;
+	case MENU_PASS:
+		_menu_pass = (_menu_pass + s.pass_count + dir) % s.pass_count;
+		break;
+	case MENU_PACKETS:
+		app_sat_high_set(!s.sat_high);
+		break;
+	case MENU_BEACON:
+		i = _beacon_step_idx(s.beacon_interval_ms) + dir;
+		if (i < 0 || i >= BEACON_STEPS) {
+			return;
+		}
+		app_beacon_interval_set(_beacon_steps_ms[i]);
+		break;
+	default:
+		break;
+	}
+	_menu_render();
+}
+
+static void _menu_move(int dir)
+{
+	_menu_idx = (_menu_idx + MENU_COUNT + dir) % MENU_COUNT;
+	_menu_render();
+}
+
+static void _menu_plus_cb(lv_event_t *e)
+{
+	_menu_step(+1);
+}
+
+static void _menu_minus_cb(lv_event_t *e)
+{
+	_menu_step(-1);
+}
+
+static void _menu_left_cb(lv_event_t *e)
+{
+	lv_dir_t dir;
+
+	if (lv_event_get_code(e) == LV_EVENT_SHORT_CLICKED) {
+		_menu_move(+1);
+		return;
+	}
+
+	dir = lv_indev_get_gesture_dir(lv_indev_active());
+	if (dir == LV_DIR_TOP) {
+		_menu_move(+1);
+	} else if (dir == LV_DIR_BOTTOM) {
+		_menu_move(-1);
+	}
+}
+
+static lv_obj_t *_menu_key(int y, const char *symbol, lv_event_cb_t cb)
+{
+	lv_obj_t *key = _box(_menu, MENU_SPLIT_X + 1, y,
+			     BOARD_LCD_H_RES - MENU_SPLIT_X - 1,
+			     BOARD_LCD_V_RES / 2);
+	lv_obj_t *l = _label(key, &lv_font_montserrat_28, COLOR_WHITE, 0);
+
+	lv_label_set_text(l, symbol);
+	lv_obj_center(l);
+	lv_obj_set_style_bg_color(key, lv_color_hex(0x1C1C1C),
+				  LV_STATE_PRESSED);
+	lv_obj_set_style_bg_opa(key, LV_OPA_COVER, LV_STATE_PRESSED);
+	lv_obj_add_flag(key, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_add_event_cb(key, cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_add_event_cb(key, cb, LV_EVENT_LONG_PRESSED_REPEAT, NULL);
+	return key;
+}
+
+static void _menu_build(lv_obj_t *scr)
+{
+	lv_obj_t *left;
+	lv_obj_t *line;
+	int dots_top = (BOARD_LCD_V_RES - (MENU_COUNT * 8 - 4)) / 2;
+
+	_menu = _box(scr, 0, 0, BOARD_LCD_H_RES, BOARD_LCD_V_RES);
+	lv_obj_set_style_bg_color(_menu, lv_color_hex(COLOR_BLACK), 0);
+	lv_obj_set_style_bg_opa(_menu, LV_OPA_COVER, 0);
+	lv_obj_add_flag(_menu, LV_OBJ_FLAG_CLICKABLE);
+
+	left = _box(_menu, 0, 0, MENU_SPLIT_X, BOARD_LCD_V_RES);
+	lv_obj_add_flag(left, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_add_event_cb(left, _menu_left_cb, LV_EVENT_GESTURE, NULL);
+	lv_obj_add_event_cb(left, _menu_left_cb, LV_EVENT_SHORT_CLICKED, NULL);
+
+	for (int i = 0; i < MENU_COUNT; i++) {
+		_menu_dots[i] = _circle(left, 4, 0x444444, LV_OPA_COVER,
+					COLOR_BLACK, 0);
+		lv_obj_set_pos(_menu_dots[i], 8, dots_top + i * 8);
+	}
+
+	_menu_title = _label(left, &lv_font_montserrat_10, COLOR_DIM, 2);
+	lv_obj_set_pos(_menu_title, MENU_TEXT_X, 14);
+	lv_obj_set_style_text_align(_menu_title, LV_TEXT_ALIGN_LEFT, 0);
+
+	_menu_value = _label(left, &lv_font_montserrat_48, COLOR_WHITE, 0);
+	lv_obj_set_pos(_menu_value, MENU_TEXT_X, 34);
+	lv_obj_set_style_text_align(_menu_value, LV_TEXT_ALIGN_LEFT, 0);
+
+	_menu_sub = _label(left, &lv_font_montserrat_12, COLOR_DIM, 0);
+	lv_obj_set_pos(_menu_sub, MENU_TEXT_X, 92);
+	lv_obj_set_width(_menu_sub, MENU_TEXT_W);
+	lv_label_set_long_mode(_menu_sub, LV_LABEL_LONG_WRAP);
+	lv_obj_set_style_text_align(_menu_sub, LV_TEXT_ALIGN_LEFT, 0);
+
+	line = _box(_menu, MENU_SPLIT_X, 0, 1, BOARD_LCD_V_RES);
+	lv_obj_set_style_bg_color(line, lv_color_hex(0x2A2A2A), 0);
+	lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
+	line = _box(_menu, MENU_SPLIT_X, BOARD_LCD_V_RES / 2,
+		    BOARD_LCD_H_RES - MENU_SPLIT_X, 1);
+	lv_obj_set_style_bg_color(line, lv_color_hex(0x2A2A2A), 0);
+	lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
+
+	_menu_plus = _menu_key(0, LV_SYMBOL_PLUS, _menu_plus_cb);
+	_menu_minus = _menu_key(BOARD_LCD_V_RES / 2 + 1, LV_SYMBOL_MINUS,
+				_menu_minus_cb);
+
+	lv_obj_add_flag(_menu, LV_OBJ_FLAG_HIDDEN);
+}
+
+static bool _menu_open(void)
+{
+	return !lv_obj_has_flag(_menu, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void _menu_show(bool show)
+{
+	if (show) {
+		_hidden(_picker, true);
+		_menu_pass = 0;
+		_menu_render();
+		lv_obj_move_foreground(_menu);
+	}
+	_hidden(_menu, !show);
+}
+
+/* ---------- front key: click = screen on/off, double = menu ---------- */
+
+static void _screen_set(bool on)
+{
+	_screen_off = !on;
+	board_backlight_set(on);
+	if (!on) {
+		_hidden(_picker, true);
+	}
+}
+
+static void _key_click(void)
+{
+	if (!lvgl_port_lock(0)) {
+		return;
+	}
+	_screen_set(_screen_off);
+	lvgl_port_unlock();
+}
+
+static void _key_double(void)
+{
+	if (!lvgl_port_lock(0)) {
+		return;
+	}
+	if (_screen_off) {
+		_screen_set(true);
+		_menu_show(true);
+	} else {
+		_menu_show(!_menu_open());
+	}
+	lvgl_port_unlock();
+}
+
+static void _key_task(void *arg)
+{
+	bool was_down = false;
+	uint32_t down_at = 0;
+	uint32_t up_at = 0;
+	int clicks = 0;
+
+	for (;;) {
+		uint32_t now = esp_timer_get_time() / 1000;
+		bool down = board_key_pressed();
+
+		if (down && !was_down) {
+			down_at = now;
+		} else if (!down && was_down && now - down_at < KEY_CLICK_MS) {
+			up_at = now;
+			if (++clicks == 2) {
+				clicks = 0;
+				_key_double();
+			}
+		}
+
+		if (clicks == 1 && !down && now - up_at > KEY_DOUBLE_MS) {
+			clicks = 0;
+			_key_click();
+		}
+
+		was_down = down;
+		vTaskDelay(pdMS_TO_TICKS(KEY_POLL_MS));
+	}
 }
 
 static void _tick_cb(lv_timer_t *t)
@@ -622,6 +1043,11 @@ static void _tick_cb(lv_timer_t *t)
 	default:
 		break;
 	}
+
+	if (_menu_open() && ++_menu_tick >= MENU_REFRESH) {
+		_menu_tick = 0;
+		_menu_render();
+	}
 }
 
 /* ---------- LVGL plumbing ---------- */
@@ -631,7 +1057,8 @@ static void _touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 	static uint16_t x;
 	static uint16_t y;
 
-	if (board_touch_read(&x, &y)) {
+	/* A dark screen must not take taps meant for nothing. */
+	if (!_screen_off && board_touch_read(&x, &y)) {
 		data->state = LV_INDEV_STATE_PRESSED;
 	} else {
 		data->state = LV_INDEV_STATE_RELEASED;
@@ -689,11 +1116,16 @@ esp_err_t ui_init(void)
 	_prov_build(scr);
 	_boot_build(scr);
 	_picker_build(scr);
+	_menu_build(scr);
 	_phase_enter(APP_PHASE_BOOT);
 	_shown_phase = APP_PHASE_BOOT;
 
 	lv_timer_create(_tick_cb, TICK_MS, NULL);
 	lvgl_port_unlock();
+
+	ESP_RETURN_ON_FALSE(xTaskCreate(_key_task, "keys", KEY_TASK_STACK, NULL,
+					KEY_TASK_PRIO, NULL) == pdPASS,
+			    ESP_ERR_NO_MEM, TAG, "key task");
 
 	return ESP_OK;
 }

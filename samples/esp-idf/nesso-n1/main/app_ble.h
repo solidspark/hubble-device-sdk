@@ -14,6 +14,8 @@
 #ifndef APP_BLE_H
 #define APP_BLE_H
 
+#include <stdint.h>
+
 #include "esp_err.h"
 
 /**
@@ -51,5 +53,15 @@ int ble_adv_start(void);
  * @return 0 on success, negative errno on failure.
  */
 int ble_adv_stop(void);
+
+/**
+ * @brief Set the beacon advertising interval.
+ *
+ * Takes effect at once if the beacon is advertising, otherwise at the next
+ * ble_adv_start().
+ *
+ * @return 0 on success, -EINVAL if the range is invalid.
+ */
+int ble_adv_interval_set(uint16_t min_ms, uint16_t max_ms);
 
 #endif /* APP_BLE_H */
