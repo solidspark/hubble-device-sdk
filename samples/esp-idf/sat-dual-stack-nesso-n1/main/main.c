@@ -19,6 +19,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "mbedtls/base64.h"
+#include <sys/time.h>
 #include "nvs_flash.h"
 
 #include <hubble/hubble.h>
@@ -27,6 +28,8 @@
 #include <hubble/sat/pass_prediction.h>
 
 #include "app_ble.h"
+#include "app_setup.h"
+#include "app_sntp.h"
 #include "app_state.h"
 #include "board.h"
 #include "ui.h"
@@ -48,6 +51,8 @@ static const char *APP_TAG = "main";
 #define BEACON_INTERVAL_MS 1100U
 
 #define DONE_SCREEN_MS     2600U
+#define SETUP_MAX_AGE_S                                                        \
+	((uint64_t)CONFIG_HUBBLE_SAMPLE_SETUP_MAX_AGE_DAYS * 24 * 60 * 60)
 #define BATTERY_LOG_US     (60ULL * 1000 * 1000)
 #define PASS_SEARCH_LIMIT  8
 
@@ -129,6 +134,12 @@ void app_beacon_interval_set(uint32_t interval_ms)
 				   interval_ms + interval_ms / 11);
 }
 
+void app_setup_forget(void)
+{
+	app_setup_clear();
+	esp_restart();
+}
+
 uint64_t app_time_ms(void)
 {
 	return _provisioned ? hubble_time_get() : 0;
@@ -139,6 +150,70 @@ static void _phase_set(enum app_phase phase)
 	portENTER_CRITICAL(&_state_lock);
 	_state.phase = phase;
 	portEXIT_CRITICAL(&_state_lock);
+}
+
+static void _setup_state_set(uint64_t saved_at_s, uint8_t sats)
+{
+	portENTER_CRITICAL(&_state_lock);
+	_state.setup_saved_at_s = saved_at_s;
+	_state.setup_sats = sats;
+	portEXIT_CRITICAL(&_state_lock);
+}
+
+/* System time, which SNTP has set if app_sntp_time_get() succeeded. */
+static uint64_t _system_time_ms(void)
+{
+	struct timeval tv;
+
+	gettimeofday(&tv, NULL);
+	return (uint64_t)tv.tv_sec * MS_PER_SEC + tv.tv_usec / US_PER_MS;
+}
+
+/*
+ * Resume without the companion when a saved setup exists, Wi-Fi gives the
+ * time, and the ephemeris is not too old. Otherwise leave orb_params empty
+ * for the companion to fill.
+ */
+static bool _setup_resume(void)
+{
+	uint64_t saved_at_s;
+	uint64_t now_s;
+	uint8_t count;
+
+	if (!app_setup_load(&device_pos, orb_params, HUBBLE_MAX_SAT, &count,
+			    &saved_at_s)) {
+		ESP_LOGI(APP_TAG, "No saved setup");
+		goto need_companion;
+	}
+	_setup_state_set(saved_at_s, count);
+
+	if (!app_sntp_configured()) {
+		ESP_LOGI(APP_TAG, "Saved setup found; set "
+				  "CONFIG_HUBBLE_SAMPLE_WIFI_SSID to resume "
+				  "without the companion");
+		goto need_companion;
+	}
+
+	_phase_set(APP_PHASE_SYNCING);
+	now_s = app_sntp_time_get() / MS_PER_SEC;
+	if (now_s == 0) {
+		goto need_companion;
+	}
+
+	if (now_s < saved_at_s || now_s - saved_at_s > SETUP_MAX_AGE_S) {
+		ESP_LOGW(APP_TAG, "Saved setup is %llu days old; waiting for "
+				  "the companion",
+			 (now_s - saved_at_s) / (24 * 60 * 60));
+		goto need_companion;
+	}
+
+	orb_params_count = count;
+	ESP_LOGI(APP_TAG, "Resumed from saved setup (%u satellites)", count);
+	return true;
+
+need_companion:
+	orb_params_count = 0;
+	return false;
 }
 
 static void _battery_log_cb(void *arg)
@@ -365,6 +440,7 @@ void app_main(void)
 {
 	esp_timer_create_args_t sat_timer_args = {0};
 	struct app_state state;
+	bool resumed;
 	esp_err_t err;
 	int ret;
 
@@ -437,18 +513,30 @@ void app_main(void)
 		}
 	}
 
+	resumed = _setup_resume();
+
 	/* Init and enable BLE */
-	ret = ble_init();
+	ret = ble_init(!resumed);
 	if (ret != 0) {
 		ESP_LOGE(APP_TAG, "Failed to init BLE, ret: %d", ret);
 		return;
 	}
 
-	_phase_set(APP_PHASE_PROVISIONING);
-	ESP_LOGI(APP_TAG, "Waiting for provisioning over BLE...");
+	if (resumed) {
+		unix_time_ms = _system_time_ms();
+	} else {
+		_phase_set(APP_PHASE_PROVISIONING);
+		ESP_LOGI(APP_TAG, "Waiting for provisioning over BLE...");
 
-	/* We sit here waiting to have time */
-	xSemaphoreTake(sync_sem, portMAX_DELAY);
+		/* We sit here waiting to have time */
+		xSemaphoreTake(sync_sem, portMAX_DELAY);
+
+		if (app_setup_save(&device_pos, orb_params, orb_params_count,
+				   unix_time_ms / MS_PER_SEC) == 0) {
+			_setup_state_set(unix_time_ms / MS_PER_SEC,
+					 orb_params_count);
+		}
+	}
 
 	ret = hubble_init(unix_time_ms, _hubble_key);
 	if (ret != 0) {

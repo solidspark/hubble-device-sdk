@@ -68,6 +68,7 @@ between values.
 | Beacons today | Read only. |
 | Battery | Read only: charge, current, voltage and temperature. |
 | Payload | Read only. |
+| Saved setup | Press twice to clear the saved location and ephemeris and restart into setup. |
 
 Menu settings are held in RAM and reset on reboot.
 
@@ -135,6 +136,10 @@ This sample exposes the following options (via `idf.py menuconfig`, under
 | --- | --- | --- |
 | `CONFIG_HUBBLE_DEVICE_KEY` | `""` | Hubble device cryptographic key, base64-encoded. |
 | `CONFIG_HUBBLE_SAMPLE_DEBUG` | `n` | Debug mode: transmit 120 seconds after provisioning, then every 120 seconds, instead of at each predicted pass. |
+| `CONFIG_HUBBLE_SAMPLE_WIFI_SSID` | `""` | 2.4 GHz Wi-Fi network for getting the time over SNTP at boot. Empty disables Wi-Fi. |
+| `CONFIG_HUBBLE_SAMPLE_WIFI_PASSWORD` | `""` | Password for that network. |
+| `CONFIG_HUBBLE_SAMPLE_SNTP_SERVER` | `"pool.ntp.org"` | SNTP server. |
+| `CONFIG_HUBBLE_SAMPLE_SETUP_MAX_AGE_DAYS` | `7` | Days a saved setup is used before the device waits for the companion again. |
 
 ## Build-time Provisioning
 
@@ -198,9 +203,23 @@ python ../../../tools/dual-stack-companion.py --label Hubble-ESP
 A successful run ends with `Provisioned device successfully`, and the screen
 changes to the next-pass countdown.
 
+### Resuming After a Reset
+
+The device saves the location and orbital parameters to NVS after each
+provisioning. The Nesso N1 has no RTC, so the time is lost on every reset or
+power cycle. If `CONFIG_HUBBLE_SAMPLE_WIFI_SSID` is set, the device joins that
+network at boot, gets the time over SNTP, turns Wi-Fi off, and resumes from the
+saved setup without the companion. The screen shows **Syncing time** meanwhile.
+
+The device waits for the companion again when:
+
+- No setup is saved, or **Saved setup** was cleared from the menu.
+- Wi-Fi is not set, or joining or SNTP fails.
+- The saved setup is older than `CONFIG_HUBBLE_SAMPLE_SETUP_MAX_AGE_DAYS`.
+
 > [!NOTE]
-> The device keeps the time, location and orbital parameters in RAM. It does not persist.
-> Run the provisioning script again after every power cycle, reset or flash.
+> The Wi-Fi password is stored in `sdkconfig`, which git ignores. Do not add it
+> to `sdkconfig.defaults`.
 
 ## Program Flow
 

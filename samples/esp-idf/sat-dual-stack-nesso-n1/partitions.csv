@@ -1,0 +1,10 @@
+# Copyright (c) 2026 Hubble Network, Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+# The single-app-large layout with a 3 MB app, to fit Wi-Fi alongside BLE,
+# the satellite stack and LVGL. NVS stays where it was, so saved data
+# survives the change.
+# Name,   Type, SubType, Offset,  Size,   Flags
+nvs,      data, nvs,     0x9000,  0x6000,
+phy_init, data, phy,     0xf000,  0x1000,
+factory,  app,  factory, 0x10000, 3M,

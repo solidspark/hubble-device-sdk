@@ -19,4 +19,30 @@ menu "Sat Dual Stack Nesso N1 Sample Configuration"
         This will set the sat timer for 2 minutes instead
         of until a satellite pass is overhead.
 
+    config HUBBLE_SAMPLE_WIFI_SSID
+    string "Wi-Fi SSID for time sync"
+    default ""
+    help
+        Wi-Fi network used at boot to get the time over SNTP. With a
+        saved setup (location and ephemeris from a previous run of
+        dual-stack-companion.py), the device then resumes without the
+        companion. Leave empty to always wait for the companion.
+
+    config HUBBLE_SAMPLE_WIFI_PASSWORD
+    string "Wi-Fi password for time sync"
+    default ""
+
+    config HUBBLE_SAMPLE_SNTP_SERVER
+    string "SNTP server"
+    default "pool.ntp.org"
+
+    config HUBBLE_SAMPLE_SETUP_MAX_AGE_DAYS
+    int "Days a saved setup is used without the companion"
+    default 7
+    range 1 365
+    help
+        Satellite ephemeris goes stale. After this many days since the
+        last run of dual-stack-companion.py, the device waits for the
+        companion again instead of resuming from the saved setup.
+
 endmenu

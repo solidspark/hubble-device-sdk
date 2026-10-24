@@ -14,6 +14,7 @@
 #ifndef APP_BLE_H
 #define APP_BLE_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -30,9 +31,12 @@
  * controller for use, and starts the time / orbital parameters sync over BLE.
  * Must be called once before any other BLE function.
  *
+ * @param setup_adv Advertise as connectable for dual-stack-companion.py.
+ *                  False when the device resumed from a saved setup.
+ *
  * @return 0 on success, negative errno on failure.
  */
-int ble_init(void);
+int ble_init(bool setup_adv);
 
 /**
  * @brief Start Bluetooth LE advertising.
