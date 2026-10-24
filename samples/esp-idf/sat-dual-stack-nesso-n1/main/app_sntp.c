@@ -4,13 +4,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <strings.h>
 #include <string.h>
 #include <sys/time.h>
+#include <time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
 #include "esp_event.h"
+#include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
@@ -21,7 +24,15 @@
 static const char *TAG = "sntp";
 
 #define WIFI_CONNECT_TIMEOUT_MS 15000
-#define SNTP_SYNC_TIMEOUT_MS    15000
+#define SNTP_SYNC_TIMEOUT_MS    10000
+#define HTTP_TIMEOUT_MS         5000
+#define HTTP_DATE_LEN           40
+
+/*
+ * Some networks block NTP (UDP 123) but allow web traffic, so the HTTP Date
+ * header of this URL is the fallback, at 1 s precision.
+ */
+#define HTTP_TIME_URL           "http://www.google.com/generate_204"
 #define WIFI_MAX_RETRIES        5
 
 #define BIT_GOT_IP              BIT0
@@ -42,8 +53,70 @@ static void _wifi_event_cb(void *arg, esp_event_base_t base, int32_t id,
 			xEventGroupSetBits(_events, BIT_GAVE_UP);
 		}
 	} else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+		ip_event_got_ip_t *ev = data;
+
+		ESP_LOGI(TAG, "Got IP " IPSTR, IP2STR(&ev->ip_info.ip));
 		xEventGroupSetBits(_events, BIT_GOT_IP);
 	}
+}
+
+/* Days since 1970-01-01 for a civil date; newlib has no timegm(). */
+static int64_t _days_from_civil(int y, unsigned m, unsigned d)
+{
+	int64_t era;
+	unsigned yoe;
+	unsigned doy;
+
+	y -= m <= 2;
+	era = (y >= 0 ? y : y - 399) / 400;
+	yoe = (unsigned)(y - era * 400);
+	doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+	return era * 146097 + (int64_t)(yoe * 365 + yoe / 4 - yoe / 100 + doy) -
+	       719468;
+}
+
+static esp_err_t _http_event_cb(esp_http_client_event_t *e)
+{
+	if (e->event_id == HTTP_EVENT_ON_HEADER &&
+	    strcasecmp(e->header_key, "Date") == 0) {
+		strlcpy(e->user_data, e->header_value, HTTP_DATE_LEN);
+	}
+	return ESP_OK;
+}
+
+/* Reads the time from an HTTP Date header and sets the system clock. */
+static uint64_t _http_time_get(void)
+{
+	char date[HTTP_DATE_LEN] = "";
+	esp_http_client_config_t cfg = {
+		.url = HTTP_TIME_URL,
+		.method = HTTP_METHOD_HEAD,
+		.timeout_ms = HTTP_TIMEOUT_MS,
+		.event_handler = _http_event_cb,
+		.user_data = date,
+	};
+	esp_http_client_handle_t client = esp_http_client_init(&cfg);
+	struct timeval tv = {0};
+	struct tm tm = {0};
+
+	if (client == NULL) {
+		return 0;
+	}
+	(void)esp_http_client_perform(client);
+	esp_http_client_cleanup(client);
+
+	if (strptime(date, "%a, %d %b %Y %H:%M:%S GMT", &tm) == NULL) {
+		ESP_LOGW(TAG, "No usable Date header from %s", HTTP_TIME_URL);
+		return 0;
+	}
+
+	tv.tv_sec = _days_from_civil(tm.tm_year + 1900, tm.tm_mon + 1,
+				     tm.tm_mday) *
+			    86400 +
+		    tm.tm_hour * 3600 + tm.tm_min * 60 + tm.tm_sec;
+	settimeofday(&tv, NULL);
+	ESP_LOGI(TAG, "Time from HTTP Date header: %lld", (long long)tv.tv_sec);
+	return (uint64_t)tv.tv_sec * 1000ULL;
 }
 
 bool app_sntp_configured(void)
@@ -54,8 +127,10 @@ bool app_sntp_configured(void)
 uint64_t app_sntp_time_get(void)
 {
 	wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
-	esp_sntp_config_t sntp_cfg =
-		ESP_NETIF_SNTP_DEFAULT_CONFIG(CONFIG_HUBBLE_SAMPLE_SNTP_SERVER);
+	esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(
+		3, ESP_SNTP_SERVER_LIST(CONFIG_HUBBLE_SAMPLE_SNTP_SERVER,
+					"time.google.com",
+					"time.cloudflare.com"));
 	wifi_config_t wifi_cfg = {0};
 	esp_event_handler_instance_t wifi_h = NULL;
 	esp_event_handler_instance_t ip_h = NULL;
@@ -126,11 +201,15 @@ uint64_t app_sntp_time_get(void)
 			gettimeofday(&tv, NULL);
 			now_ms = (uint64_t)tv.tv_sec * 1000ULL +
 				 tv.tv_usec / 1000;
-			ESP_LOGI(TAG, "Time synced: %llu", now_ms);
+			ESP_LOGI(TAG, "Time from SNTP: %llu", now_ms);
 		} else {
 			ESP_LOGW(TAG, "SNTP sync timed out");
 		}
 		esp_netif_sntp_deinit();
+	}
+
+	if (now_ms == 0) {
+		now_ms = _http_time_get();
 	}
 
 out_stop:

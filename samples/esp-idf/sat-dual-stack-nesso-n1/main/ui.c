@@ -116,8 +116,8 @@ enum menu_item {
 	MENU_COUNT,
 };
 
-/* Beacon interval choices; 1100 ms is the sample's 1000-1200 ms default. */
-static const uint32_t _beacon_steps_ms[] = {500, 1100, 2000, 5000, 10000};
+/* Beacon interval choices; 1500 ms is the default (app_ble.c). */
+static const uint32_t _beacon_steps_ms[] = {500, 1000, 1500, 2000, 5000, 10000};
 #define BEACON_STEPS (int)(sizeof(_beacon_steps_ms) / sizeof(_beacon_steps_ms[0]))
 
 static lv_obj_t *_menu;
@@ -708,7 +708,9 @@ static void _render_terrestrial(const struct app_state *s, uint64_t now)
 		 (unsigned long)s->beacon_interval_ms / 1000,
 		 (unsigned long)(s->beacon_interval_ms % 1000) / 100);
 	_label_set(_info1, buf);
-	_label_set(_info2, "BLE  0 DBM");
+	snprintf(buf, sizeof(buf), "BLE  %+d DBM",
+		 CONFIG_BT_LE_DFT_TX_POWER_LEVEL_DBM_EFF);
+	_label_set(_info2, buf);
 }
 
 /* ---------- N1 menu: one value at a time, +/- on the right ---------- */
@@ -819,7 +821,8 @@ static void _menu_text(const struct app_state *s, uint64_t now, char *title,
 		snprintf(value, len, "%lu.%lu",
 			 (unsigned long)s->beacon_interval_ms / 1000,
 			 (unsigned long)(s->beacon_interval_ms % 1000) / 100);
-		snprintf(sub, len, "seconds, BLE 0 dBm");
+		snprintf(sub, len, "seconds, BLE %+d dBm",
+			 CONFIG_BT_LE_DFT_TX_POWER_LEVEL_DBM_EFF);
 		break;
 	case MENU_TODAY:
 		snprintf(title, len, "BEACONS TODAY");

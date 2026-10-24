@@ -47,8 +47,8 @@ static const char *APP_TAG = "main";
 #define SAT_NORM_INTERVAL  20U
 #define SAT_MAX_DRIFT_MS   (90U * 60U * MS_PER_SEC)
 
-/* Midpoint of the beacon's 1000-1200 ms advertising interval */
-#define BEACON_INTERVAL_MS 1100U
+/* Midpoint of the beacon's 1364-1636 ms advertising interval */
+#define BEACON_INTERVAL_MS 1500U
 
 #define DONE_SCREEN_MS     2600U
 #define SETUP_MAX_AGE_S                                                        \
