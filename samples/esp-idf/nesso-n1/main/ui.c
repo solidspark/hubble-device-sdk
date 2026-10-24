@@ -973,12 +973,17 @@ static void _screen_set(bool on)
 	}
 }
 
+/* In the menu a click backs out; elsewhere it turns the screen off or on. */
 static void _key_click(void)
 {
 	if (!lvgl_port_lock(0)) {
 		return;
 	}
-	_screen_set(_screen_off);
+	if (!_screen_off && _menu_open()) {
+		_menu_show(false);
+	} else {
+		_screen_set(_screen_off);
+	}
 	lvgl_port_unlock();
 }
 
