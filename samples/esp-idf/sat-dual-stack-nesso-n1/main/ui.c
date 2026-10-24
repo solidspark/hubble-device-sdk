@@ -15,6 +15,7 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "esp_pm.h"
 #include "esp_timer.h"
 #include "lvgl.h"
 
@@ -51,6 +52,8 @@ extern const lv_image_dsc_t hubble_logo;
 
 /* Front key: a click is a short press; two within the gap is a double. */
 #define KEY_POLL_MS    20
+/* With the screen off the key task also polls touch, so a tap still wakes it. */
+#define KEY_POLL_OFF_MS 50
 #define KEY_CLICK_MS   500
 #define KEY_DOUBLE_MS  350
 #define KEY_TASK_STACK 3072
@@ -133,8 +136,13 @@ static int _menu_tick;
 static bool _setup_armed;
 
 static bool _screen_off;
-static volatile bool _wake_request;
+static volatile bool _swallow_touch;
 static uint32_t _last_activity;
+
+/* Held while the screen is on so drawing and touch stay responsive. */
+static esp_pm_lock_handle_t _ui_sleep_lock;
+static esp_pm_lock_handle_t _ui_cpu_lock;
+static bool _ui_locks_held;
 
 static bool _menu_open(void);
 static void _hidden(lv_obj_t *o, bool hidden);
@@ -1092,14 +1100,59 @@ static void _menu_show(bool show)
 
 /* ---------- front key: click = screen on/off, double = menu ---------- */
 
+static void _ui_locks(bool hold)
+{
+	if (_ui_sleep_lock == NULL || hold == _ui_locks_held) {
+		return;
+	}
+	if (hold) {
+		esp_pm_lock_acquire(_ui_sleep_lock);
+		esp_pm_lock_acquire(_ui_cpu_lock);
+	} else {
+		esp_pm_lock_release(_ui_cpu_lock);
+		esp_pm_lock_release(_ui_sleep_lock);
+	}
+	_ui_locks_held = hold;
+}
+
+/*
+ * Screen off is fully off: backlight, panel (ST7789 sleep-in) and LVGL all
+ * stop, and the UI's power locks go, so the chip can light-sleep. The key
+ * task keeps watching keys, touch and state changes to wake it.
+ */
 static void _screen_set(bool on)
 {
 	_last_activity = lv_tick_get();
-	_screen_off = !on;
-	board_backlight_set(on);
-	if (!on) {
-		_hidden(_picker, true);
+	if (on == !_screen_off) {
+		return;
 	}
+	_screen_off = !on;
+
+	if (on) {
+		_ui_locks(true);
+		(void)esp_lcd_panel_disp_sleep(board_lcd_panel(), false);
+		(void)lvgl_port_resume();
+		lv_obj_invalidate(lv_screen_active());
+		board_backlight_set(true);
+	} else {
+		_hidden(_picker, true);
+		board_backlight_set(false);
+		(void)esp_lcd_panel_disp_sleep(board_lcd_panel(), true);
+		(void)lvgl_port_stop();
+		_ui_locks(false);
+	}
+}
+
+static void _wake(bool by_touch)
+{
+	if (!lvgl_port_lock(0)) {
+		return;
+	}
+	if (by_touch) {
+		_swallow_touch = true;
+	}
+	_screen_set(true);
+	lvgl_port_unlock();
 }
 
 /* In the menu a click backs out; elsewhere it turns the screen off or on. */
@@ -1134,14 +1187,29 @@ static void _key_double(void)
 
 static void _key_task(void *arg)
 {
+	enum app_phase seen = APP_PHASE_BOOT;
+	struct app_state s;
 	bool was_down = false;
 	uint32_t down_at = 0;
 	uint32_t up_at = 0;
 	int clicks = 0;
+	uint16_t tx;
+	uint16_t ty;
 
 	for (;;) {
 		uint32_t now = esp_timer_get_time() / 1000;
 		bool down = board_key_pressed();
+
+		/* LVGL is paused while dark, so wake-ups are watched from here. */
+		app_state_get(&s);
+		if (_screen_off) {
+			if (s.phase != seen) {
+				_wake(false);
+			} else if (board_touch_read(&tx, &ty)) {
+				_wake(true);
+			}
+		}
+		seen = s.phase;
 
 		if (down && !was_down) {
 			down_at = now;
@@ -1159,7 +1227,8 @@ static void _key_task(void *arg)
 		}
 
 		was_down = down;
-		vTaskDelay(pdMS_TO_TICKS(KEY_POLL_MS));
+		vTaskDelay(pdMS_TO_TICKS(_screen_off ? KEY_POLL_OFF_MS
+						     : KEY_POLL_MS));
 	}
 }
 
@@ -1178,11 +1247,7 @@ static void _tick_cb(lv_timer_t *t)
 		_shown_phase = s.phase;
 	}
 
-	if (_wake_request) {
-		_wake_request = false;
-		_screen_set(true);
-	} else if (!_screen_off &&
-		   lv_tick_elaps(_last_activity) > SCREEN_IDLE_MS) {
+	if (!_screen_off && lv_tick_elaps(_last_activity) > SCREEN_IDLE_MS) {
 		_screen_set(false);
 	}
 
@@ -1222,21 +1287,17 @@ static void _touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 	static uint16_t x;
 	static uint16_t y;
 
-	static bool waking;
 	bool touched = board_touch_read(&x, &y);
 
 	/*
 	 * A tap on a dark screen only wakes it; the press is swallowed until
 	 * the finger lifts so it cannot hit whatever is under it.
 	 */
-	if (touched && (_screen_off || waking)) {
-		if (_screen_off) {
-			_wake_request = true;
+	if (_swallow_touch) {
+		if (!touched) {
+			_swallow_touch = false;
 		}
-		waking = true;
 		touched = false;
-	} else if (!touched) {
-		waking = false;
 	}
 
 	if (touched) {
@@ -1279,6 +1340,14 @@ esp_err_t ui_init(void)
 	};
 	lv_indev_t *indev;
 	lv_obj_t *scr;
+
+	if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "ui",
+			       &_ui_sleep_lock) != ESP_OK ||
+	    esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "ui_cpu",
+			       &_ui_cpu_lock) != ESP_OK) {
+		_ui_sleep_lock = NULL;
+	}
+	_ui_locks(true);
 
 	ESP_RETURN_ON_ERROR(lvgl_port_init(&port_cfg), TAG, "lvgl port");
 
