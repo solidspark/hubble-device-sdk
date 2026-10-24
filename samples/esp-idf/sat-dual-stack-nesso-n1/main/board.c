@@ -30,6 +30,7 @@ static const char *TAG = "board";
 #define PIN_LCD_DC      16
 #define PIN_LCD_CS      17
 #define PIN_LORA_CS     23
+#define PIN_LORA_BUSY   19
 
 #define LCD_HOST        SPI2_HOST
 #define LCD_PCLK_HZ     (40 * 1000 * 1000)
@@ -56,6 +57,21 @@ static const char *TAG = "board";
 #define EXP0_KEY1       0
 #define EXP0_KEY2       1
 #define EXP0_KEYS_MASK  ((1U << EXP0_KEY1) | (1U << EXP0_KEY2))
+
+/* Expander 0 (0x43) LoRa control pins (M5Stack Nesso N1 pin map) */
+#define EXP0_LORA_LNA   5
+#define EXP0_LORA_ANT   6
+#define EXP0_LORA_NRST  7
+
+#define SX1262_SET_SLEEP 0x84
+#define LORA_SPI_HZ     (8 * 1000 * 1000)
+
+/* BMI270 IMU */
+#define IMU_ADDR        0x68
+#define IMU_REG_CHIP_ID 0x00
+#define IMU_REG_PWR_CONF 0x7C
+#define IMU_REG_PWR_CTRL 0x7D
+#define IMU_ADV_PWR_SAVE 0x01
 
 /* Expander 1 (0x44) pins */
 #define EXP1_LCD_RESET  1
@@ -98,6 +114,7 @@ static i2c_master_dev_handle_t _exp1;
 static i2c_master_dev_handle_t _touch;
 static i2c_master_dev_handle_t _gauge;
 static i2c_master_dev_handle_t _chg;
+static i2c_master_dev_handle_t _imu;
 
 static esp_lcd_panel_io_handle_t _lcd_io;
 static esp_lcd_panel_handle_t _lcd_panel;
@@ -204,6 +221,10 @@ static esp_err_t _i2c_init(void)
 	ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(_i2c_bus, &dev_cfg,
 						      &_chg),
 			    TAG, "charger");
+	dev_cfg.device_address = IMU_ADDR;
+	ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(_i2c_bus, &dev_cfg,
+						      &_imu),
+			    TAG, "imu");
 	dev_cfg.device_address = GAUGE_ADDR;
 	return i2c_master_bus_add_device(_i2c_bus, &dev_cfg, &_gauge);
 }
@@ -318,11 +339,95 @@ static esp_err_t _charger_init(void)
 	return _reg_write(_chg, CHG_REG_TIMER, timer & ~CHG_WD_MASK);
 }
 
+/*
+ * The sample never uses LoRa, but the SX1262 powers up in standby with its
+ * LNA and antenna switch possibly enabled. Turn those off, reset it to a
+ * known state, and put it into sleep (cold start) over the shared SPI bus.
+ */
+static esp_err_t _lora_sleep(void)
+{
+	spi_device_interface_config_t dev_cfg = {
+		.clock_speed_hz = LORA_SPI_HZ,
+		.mode = 0,
+		.spics_io_num = PIN_LORA_CS,
+		.queue_size = 1,
+	};
+	gpio_config_t busy = {
+		.pin_bit_mask = 1ULL << PIN_LORA_BUSY,
+		.mode = GPIO_MODE_INPUT,
+	};
+	uint8_t cmd[2] = {SX1262_SET_SLEEP, 0x00};
+	spi_transaction_t t = {
+		.length = sizeof(cmd) * 8,
+		.tx_buffer = cmd,
+	};
+	spi_device_handle_t lora;
+	int waited_ms = 0;
+
+	ESP_RETURN_ON_ERROR(_exp_output(_exp0, EXP0_LORA_LNA, false), TAG,
+			    "lna");
+	ESP_RETURN_ON_ERROR(_exp_output(_exp0, EXP0_LORA_ANT, false), TAG,
+			    "ant");
+	ESP_RETURN_ON_ERROR(_exp_output(_exp0, EXP0_LORA_NRST, false), TAG,
+			    "nrst");
+	vTaskDelay(pdMS_TO_TICKS(2));
+	ESP_RETURN_ON_ERROR(_reg_update(_exp0, EXP_REG_OUT, EXP0_LORA_NRST,
+					true),
+			    TAG, "nrst high");
+
+	ESP_RETURN_ON_ERROR(gpio_config(&busy), TAG, "busy");
+	while (gpio_get_level(PIN_LORA_BUSY) && waited_ms < 50) {
+		vTaskDelay(pdMS_TO_TICKS(1));
+		waited_ms++;
+	}
+
+	ESP_RETURN_ON_ERROR(spi_bus_add_device(LCD_HOST, &dev_cfg, &lora), TAG,
+			    "lora device");
+	ESP_RETURN_ON_ERROR(spi_device_polling_transmit(lora, &t), TAG,
+			    "set sleep");
+	ESP_LOGI(TAG, "LoRa radio asleep (busy cleared after %d ms)",
+		 waited_ms);
+	return ESP_OK;
+}
+
+/*
+ * Without a loaded config the BMI270 should already idle, but check it and
+ * make sure the accelerometer and gyro are off with advanced power save on.
+ */
+static void _imu_idle(void)
+{
+	uint8_t id = 0;
+	uint8_t conf = 0;
+	uint8_t ctrl = 0;
+
+	if (_reg_read(_imu, IMU_REG_CHIP_ID, &id, 1) != ESP_OK ||
+	    _reg_read(_imu, IMU_REG_PWR_CONF, &conf, 1) != ESP_OK ||
+	    _reg_read(_imu, IMU_REG_PWR_CTRL, &ctrl, 1) != ESP_OK) {
+		ESP_LOGW(TAG, "IMU did not answer");
+		return;
+	}
+	ESP_LOGI(TAG, "IMU chip 0x%02x, PWR_CONF 0x%02x, PWR_CTRL 0x%02x", id,
+		 conf, ctrl);
+
+	if (ctrl != 0) {
+		(void)_reg_write(_imu, IMU_REG_PWR_CTRL, 0);
+	}
+	if (!(conf & IMU_ADV_PWR_SAVE)) {
+		vTaskDelay(pdMS_TO_TICKS(1));
+		(void)_reg_write(_imu, IMU_REG_PWR_CONF,
+				 conf | IMU_ADV_PWR_SAVE);
+	}
+}
+
 esp_err_t board_init(void)
 {
 	ESP_RETURN_ON_ERROR(_i2c_init(), TAG, "i2c");
 	ESP_RETURN_ON_ERROR(_expander_init(), TAG, "expander");
 	ESP_RETURN_ON_ERROR(_lcd_init(), TAG, "lcd");
+	if (_lora_sleep() != ESP_OK) {
+		ESP_LOGW(TAG, "Could not put the LoRa radio to sleep");
+	}
+	_imu_idle();
 	if (_charger_init() != ESP_OK) {
 		ESP_LOGW(TAG, "Charger did not answer; charging not configured");
 	}
