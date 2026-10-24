@@ -38,7 +38,7 @@ Nesso N1's 1.14" 240 × 135 touchscreen and front buttons. It is designed to:
 | --- | --- |
 | Loading | At boot. |
 | Waiting for setup | The device advertises as **Hubble-ESP** until `dual-stack-companion.py` provisions it. |
-| Next pass | Countdown to the next pass. The ring is a 24-hour dial; the blurple rings mark the next three passes. |
+| Next pass | Countdown to the next pass, with its local time (PT by default) and peak elevation. The ring is a 24-hour dial; the blurple rings mark the next three passes. |
 | Transmitting | During a pass. The ring fills as packets are sent. |
 | Window complete | The transmission finished. The screen returns to the countdown. |
 | Beaconing | Terrestrial mode: BLE beacons only, with an estimated count of packets sent today (UTC). |
@@ -139,6 +139,8 @@ This sample exposes the following options (via `idf.py menuconfig`, under
 | `CONFIG_HUBBLE_SAMPLE_WIFI_SSID` | `""` | 2.4 GHz Wi-Fi network for getting the time over SNTP at boot. Empty disables Wi-Fi. |
 | `CONFIG_HUBBLE_SAMPLE_WIFI_PASSWORD` | `""` | Password for that network. |
 | `CONFIG_HUBBLE_SAMPLE_SNTP_SERVER` | `"pool.ntp.org"` | SNTP server. |
+| `CONFIG_HUBBLE_SAMPLE_TZ` | `"PST8PDT,M3.2.0,M11.1.0"` | Time zone for pass times, as a POSIX TZ string. |
+| `CONFIG_HUBBLE_SAMPLE_TZ_LABEL` | `"PT"` | Label shown after pass times. |
 | `CONFIG_HUBBLE_SAMPLE_SETUP_MAX_AGE_DAYS` | `7` | Days a saved setup is used before the device waits for the companion again. |
 
 ## Build-time Provisioning
