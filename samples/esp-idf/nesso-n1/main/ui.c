@@ -89,8 +89,8 @@ static lv_obj_t *_picker;
 static lv_obj_t *_pick_hl;
 
 enum menu_item {
-	MENU_MODE,
 	MENU_PASS,
+	MENU_MODE,
 	MENU_PACKETS,
 	MENU_SAT_POWER,
 	MENU_BEACON,
@@ -835,6 +835,7 @@ static void _menu_step(int dir)
 static void _menu_move(int dir)
 {
 	_menu_idx = (_menu_idx + MENU_COUNT + dir) % MENU_COUNT;
+	_menu_pass = 0;
 	_menu_render();
 }
 
@@ -848,12 +849,15 @@ static void _menu_minus_cb(lv_event_t *e)
 	_menu_step(-1);
 }
 
+/* Tapping the top half of the left side goes back, the bottom half on. */
 static void _menu_left_cb(lv_event_t *e)
 {
+	lv_point_t p;
 	lv_dir_t dir;
 
 	if (lv_event_get_code(e) == LV_EVENT_SHORT_CLICKED) {
-		_menu_move(+1);
+		lv_indev_get_point(lv_indev_active(), &p);
+		_menu_move(p.y < BOARD_LCD_V_RES / 2 ? -1 : +1);
 		return;
 	}
 
@@ -905,6 +909,13 @@ static void _menu_build(lv_obj_t *scr)
 		lv_obj_set_pos(_menu_dots[i], 8, dots_top + i * 8);
 	}
 
+	line = _label(left, &lv_font_montserrat_10, COLOR_DIM, 0);
+	lv_label_set_text(line, LV_SYMBOL_UP);
+	lv_obj_set_pos(line, 5, dots_top - 16);
+	line = _label(left, &lv_font_montserrat_10, COLOR_DIM, 0);
+	lv_label_set_text(line, LV_SYMBOL_DOWN);
+	lv_obj_set_pos(line, 5, dots_top + MENU_COUNT * 8 + 4);
+
 	_menu_title = _label(left, &lv_font_montserrat_10, COLOR_DIM, 2);
 	lv_obj_set_pos(_menu_title, MENU_TEXT_X, 14);
 	lv_obj_set_style_text_align(_menu_title, LV_TEXT_ALIGN_LEFT, 0);
@@ -943,6 +954,7 @@ static void _menu_show(bool show)
 {
 	if (show) {
 		_hidden(_picker, true);
+		_menu_idx = MENU_PASS;
 		_menu_pass = 0;
 		_menu_render();
 		lv_obj_move_foreground(_menu);
