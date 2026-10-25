@@ -30,7 +30,6 @@ static const char *TAG = "board";
 #define PIN_LCD_DC      16
 #define PIN_LCD_CS      17
 #define PIN_LORA_CS     23
-#define PIN_TOUCH_INT   3
 #define PIN_LORA_BUSY   19
 #define PIN_IR_TX       9
 #define PIN_BUZZER      11
@@ -451,13 +450,6 @@ static void _quiet_pins_init(void)
 	(void)gpio_sleep_sel_dis(PIN_BUZZER);
 }
 
-static bool _lora_hold_reset = true;
-
-void board_lora_hold_reset(bool hold)
-{
-	_lora_hold_reset = hold;
-}
-
 esp_err_t board_init(void)
 {
 	_quiet_pins_init();
@@ -471,17 +463,13 @@ esp_err_t board_init(void)
 	 * Arduino names E0.P7 LORA_ENABLE, M5Stack SX_NRST; either way, low
 	 * keeps the unused radio from drawing. Measured in an unplugged run.
 	 */
-	if (_lora_hold_reset) {
-		board_lora_enable(false);
-	}
+	board_lora_enable(false);
 	/* The sample uses nothing on the Grove port; keep its supply off. */
 	board_grove_power(false);
 	_imu_idle();
 	if (_charger_init() != ESP_OK) {
 		ESP_LOGW(TAG, "Charger did not answer; charging not configured");
 	}
-	/* It may still be in hibernate from before a reset. */
-	board_touch_set_active(true);
 	board_backlight_set(true);
 	return ESP_OK;
 }
@@ -497,49 +485,35 @@ esp_lcd_panel_handle_t board_lcd_panel(void)
 }
 
 /*
- * Hibernate, not monitor mode: in monitor mode this board's FT6336 drew
- * about 13 mA, the whole of the deep-sleep floor in an unplugged run; in
- * hibernate the gauge reads 0 mA. The reset line is not routed, but a
- * low pulse on INT (GPIO 3) wakes it: 1 ms did not, 5 ms did.
+ * Never hibernate: the reset line is not routed, and a low pulse on INT
+ * (GPIO 3) brings the controller back only partly. It answers on I2C but
+ * reports no touches until a power cycle.
  */
-#define TOUCH_PMODE_ACTIVE    0
-#define TOUCH_PMODE_HIBERNATE 3
-#define TOUCH_WAKE_PULSE_MS   10
-#define TOUCH_WAKE_WAIT_MS    300
-
-static void _touch_wake(void)
-{
-	gpio_config_t out = {
-		.pin_bit_mask = 1ULL << PIN_TOUCH_INT,
-		.mode = GPIO_MODE_OUTPUT,
-	};
-	gpio_config_t in = {
-		.pin_bit_mask = 1ULL << PIN_TOUCH_INT,
-		.mode = GPIO_MODE_INPUT,
-		.pull_up_en = GPIO_PULLUP_ENABLE,
-	};
-
-	gpio_set_level(PIN_TOUCH_INT, 0);
-	(void)gpio_config(&out);
-	vTaskDelay(pdMS_TO_TICKS(TOUCH_WAKE_PULSE_MS));
-	(void)gpio_config(&in);
-
-	for (int waited = 0; waited < TOUCH_WAKE_WAIT_MS; waited += 10) {
-		if (i2c_master_probe(_i2c_bus, TOUCH_ADDR, 20) == ESP_OK) {
-			return;
-		}
-		vTaskDelay(pdMS_TO_TICKS(10));
-	}
-	ESP_LOGW(TAG, "touch did not wake");
-}
+#define TOUCH_PMODE_ACTIVE  0
+#define TOUCH_PMODE_MONITOR 1
 
 void board_touch_set_active(bool active)
 {
-	if (active) {
-		_touch_wake();
-	}
 	(void)_reg_write(_touch, TOUCH_REG_PMODE,
-			 active ? TOUCH_PMODE_ACTIVE : TOUCH_PMODE_HIBERNATE);
+			 active ? TOUCH_PMODE_ACTIVE : TOUCH_PMODE_MONITOR);
+}
+
+void board_touch_reg_write(uint8_t reg, uint8_t val)
+{
+	(void)_reg_write(_touch, reg, val);
+}
+
+void board_touch_reg_log(void)
+{
+	static const uint8_t regs[] = {0x80, 0x86, 0x87, 0x88, 0x89, 0xA4,
+				       0xA5, 0xA6, 0xA8};
+
+	for (size_t i = 0; i < sizeof(regs); i++) {
+		uint8_t v = 0xee;
+
+		(void)_reg_read(_touch, regs[i], &v, 1);
+		ESP_LOGI(TAG, "touch reg 0x%02x = 0x%02x (%u)", regs[i], v, v);
+	}
 }
 
 bool board_touch_read(uint16_t *x, uint16_t *y)

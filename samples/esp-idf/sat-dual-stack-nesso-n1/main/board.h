@@ -42,8 +42,14 @@ esp_lcd_panel_handle_t board_lcd_panel(void);
  */
 bool board_touch_read(uint16_t *x, uint16_t *y);
 
-/** @brief Switch the touch controller between active and hibernate. */
+/** @brief Switch the touch controller between active and low-power monitor. */
 void board_touch_set_active(bool active);
+
+/** @brief Write one touch controller register; for power tests. */
+void board_touch_reg_write(uint8_t reg, uint8_t val);
+
+/** @brief Log the touch controller's power and rate registers. */
+void board_touch_reg_log(void);
 
 
 void board_led_set(bool on);
@@ -53,14 +59,6 @@ void board_backlight_set(bool on);
 
 /** @brief Drive the LoRa block's expander pin E0.P7 (enable or reset). */
 void board_lora_enable(bool on);
-
-/**
- * @brief Choose whether board_init leaves the LoRa block's E0.P7 low.
- *
- * Default true. With false the radio stays in its SPI sleep instead.
- * Call before board_init.
- */
-void board_lora_hold_reset(bool hold);
 
 /** @brief Switch the Grove port's power (expander E1.P2). */
 void board_grove_power(bool on);
