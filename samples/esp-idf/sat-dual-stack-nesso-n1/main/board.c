@@ -433,6 +433,8 @@ esp_err_t board_init(void)
 	 * keeps the unused radio from drawing. Measured in an unplugged run.
 	 */
 	board_lora_enable(false);
+	/* The sample uses nothing on the Grove port; keep its supply off. */
+	board_grove_power(false);
 	_imu_idle();
 	if (_charger_init() != ESP_OK) {
 		ESP_LOGW(TAG, "Charger did not answer; charging not configured");
