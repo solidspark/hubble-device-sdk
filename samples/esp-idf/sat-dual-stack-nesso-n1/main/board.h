@@ -42,15 +42,9 @@ esp_lcd_panel_handle_t board_lcd_panel(void);
  */
 bool board_touch_read(uint16_t *x, uint16_t *y);
 
-/** @brief Switch the touch controller between active and low-power monitor. */
+/** @brief Switch the touch controller between active and hibernate. */
 void board_touch_set_active(bool active);
 
-/**
- * @brief Put the touch controller in hibernate.
- *
- * Only a power cycle wakes it again; for power tests only.
- */
-void board_touch_hibernate(void);
 
 void board_led_set(bool on);
 

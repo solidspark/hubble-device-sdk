@@ -1159,7 +1159,6 @@ static void _screen_set(bool on)
 
 	if (on) {
 		_ui_locks(true);
-		board_touch_set_active(true);
 		(void)esp_lcd_panel_disp_sleep(board_lcd_panel(), false);
 		(void)lvgl_port_resume();
 		lv_timer_resume(lv_display_get_refr_timer(_disp));
@@ -1167,6 +1166,7 @@ static void _screen_set(bool on)
 		lv_timer_resume(_ui_timer);
 		lv_obj_invalidate(lv_screen_active());
 		board_backlight_set(true);
+		board_touch_set_active(true);
 	} else {
 		_hidden(_picker, true);
 		board_backlight_set(false);
