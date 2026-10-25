@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include "esp_pm.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "nvs.h"
 
 #include "app_ble.h"
@@ -33,6 +34,8 @@ static const char *TAG = "power_test";
 #define STEP_SAMPLE_S 120
 #define SAMPLE_S      2
 #define ELF_ID_LEN    16
+/* Restart anyway if the test has not finished by then. */
+#define FAILSAFE_S    (13 * 60)
 
 /*
  * USB Serial/JTAG stops working in light sleep, and this build turns off
@@ -56,7 +59,14 @@ struct ab_results {
 	uint16_t mv[AB_STEPS];
 	uint8_t samples[AB_STEPS];
 	uint8_t usb_seen[AB_STEPS];
+	uint8_t steps_done;
 };
+
+static void _failsafe_cb(void *arg)
+{
+	ESP_LOGW(TAG, "Failsafe: test overran, restarting");
+	esp_restart();
+}
 
 static void _elf_id(char out[ELF_ID_LEN + 1])
 {
@@ -65,8 +75,10 @@ static void _elf_id(char out[ELF_ID_LEN + 1])
 
 static void _print(const struct ab_results *r)
 {
-	ESP_LOGI(TAG, "A/B results (battery draw, charger in Hi-Z):");
-	for (int i = 0; i < AB_STEPS; i++) {
+	ESP_LOGI(TAG, "A/B results (battery draw, charger in Hi-Z), %u of %d "
+		      "steps done:",
+		 r->steps_done, AB_STEPS);
+	for (int i = 0; i < r->steps_done && i < AB_STEPS; i++) {
 		ESP_LOGI(TAG, "  %-26s %4d mA avg (%d..%d), %u mV, %u samples%s",
 			 _step_names[i], r->avg_ma[i], r->min_ma[i],
 			 r->max_ma[i], r->mv[i], r->samples[i],
@@ -89,11 +101,20 @@ static void _save(const struct ab_results *r)
 /* Runs the steps once, saves the results, then restarts. */
 static void _test_task(void *arg)
 {
+	esp_timer_create_args_t failsafe_args = {
+		.callback = _failsafe_cb,
+		.name = "test_failsafe",
+	};
+	esp_timer_handle_t failsafe;
 	struct ab_results r = {0};
 	uint16_t mv;
 	int16_t ma;
 
 	_elf_id(r.elf);
+	if (esp_timer_create(&failsafe_args, &failsafe) == ESP_OK) {
+		(void)esp_timer_start_once(failsafe,
+					   FAILSAFE_S * 1000ULL * 1000ULL);
+	}
 	vTaskDelay(pdMS_TO_TICKS(BOOT_SETTLE_S * 1000));
 
 	ESP_LOGI(TAG, "Starting: USB input off, screen off, ~10 min");
@@ -135,6 +156,9 @@ static void _test_task(void *arg)
 		r.avg_ma[step] = n ? sum / n : 0;
 		r.min_ma[step] = n ? lo : 0;
 		r.max_ma[step] = n ? hi : 0;
+		r.steps_done = step + 1;
+		/* Saved per step so a stall still leaves what was measured. */
+		_save(&r);
 	}
 
 	esp_pm_lock_acquire(_awake_lock);
@@ -165,8 +189,11 @@ void app_power_test_start(void)
 	esp_pm_lock_acquire(_awake_lock);
 
 	_elf_id(elf);
-	if (have && strcmp(saved.elf, elf) == 0) {
+	if (have) {
 		_print(&saved);
+	}
+	if (have && strcmp(saved.elf, elf) == 0 &&
+	    saved.steps_done == AB_STEPS) {
 		return;
 	}
 
