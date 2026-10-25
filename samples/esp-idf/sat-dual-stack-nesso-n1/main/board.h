@@ -92,6 +92,17 @@ enum board_charge board_charge_state(void);
  */
 bool board_battery_read(uint16_t *mv, int16_t *ma);
 
+/**
+ * @brief Filtered battery current from the BQ27220 fuel gauge.
+ *
+ * The gauge averages over tens of seconds, so a read just after a short
+ * wake still reflects the time before it.
+ *
+ * @param ma Battery current in milliamps; positive while charging.
+ * @return false if the gauge did not answer.
+ */
+bool board_battery_avg_ma(int16_t *ma);
+
 /** @brief Log percent, voltage, current and charge state. */
 void board_battery_log(void);
 

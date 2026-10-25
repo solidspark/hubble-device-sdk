@@ -11,6 +11,7 @@ set(SOURCES
 	"app_sntp.c"
 	"app_power_log.c"
 	"app_power_test.c"
+	"app_sleep_floor.c"
 )
 
 idf_component_register(SRCS ${SOURCES}

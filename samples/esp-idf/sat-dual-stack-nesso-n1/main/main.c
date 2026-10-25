@@ -33,6 +33,7 @@
 #include "app_ble.h"
 #include "app_power_log.h"
 #include "app_power_test.h"
+#include "app_sleep_floor.h"
 #include "app_setup.h"
 #include "app_sntp.h"
 #include "app_state.h"
@@ -574,6 +575,10 @@ void app_main(void)
 		err = nvs_flash_init();
 	}
 	ESP_ERROR_CHECK(err);
+
+#ifdef CONFIG_HUBBLE_SAMPLE_SLEEP_FLOOR_TEST
+	app_sleep_floor_run();
+#endif
 
 	_pm_init();
 

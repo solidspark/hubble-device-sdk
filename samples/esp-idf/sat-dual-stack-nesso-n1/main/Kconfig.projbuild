@@ -60,6 +60,15 @@ menu "Sat Dual Stack Nesso N1 Sample Configuration"
         draw of each at the next boot. Also turn off
         CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION, or USB keeps the chip awake.
 
+    config HUBBLE_SAMPLE_SLEEP_FLOOR_TEST
+    bool "Measure the board's deep-sleep floor instead of running the sample"
+    default n
+    help
+        For battery-life work. On battery, the board turns off the display,
+        LoRa and Grove power, then deep sleeps for 60 s at a time. At each
+        wake it saves the fuel gauge's average current. On USB it prints
+        the saved samples and waits; unplugging starts a new run.
+
     config HUBBLE_SAMPLE_TZ
     string "Time zone for pass times (POSIX TZ)"
     default "PST8PDT,M3.2.0,M11.1.0"
