@@ -31,6 +31,8 @@ static const char *TAG = "board";
 #define PIN_LCD_CS      17
 #define PIN_LORA_CS     23
 #define PIN_LORA_BUSY   19
+#define PIN_IR_TX       9
+#define PIN_BUZZER      11
 
 #define LCD_HOST        SPI2_HOST
 #define LCD_PCLK_HZ     (40 * 1000 * 1000)
@@ -420,8 +422,36 @@ static void _imu_idle(void)
 	}
 }
 
+/*
+ * The IR LED (GPIO 9) and the active buzzer (GPIO 11) are both active high
+ * (Zephyr's arduino_nesso_n1 devicetree). GPIO 9 is the boot strap pin, so
+ * its pull-up is on at reset and the IR LED would draw continuously. Drive
+ * both low, and keep that configuration in light sleep instead of IDF's
+ * default isolation, which would float them. No gpio_hold: a hold that
+ * survived a reset would strap GPIO 9 low and boot into download mode.
+ */
+static void _quiet_pins_init(void)
+{
+	gpio_config_t out = {
+		.pin_bit_mask = (1ULL << PIN_IR_TX) | (1ULL << PIN_BUZZER),
+		.mode = GPIO_MODE_OUTPUT,
+		.pull_up_en = GPIO_PULLUP_DISABLE,
+		.pull_down_en = GPIO_PULLDOWN_DISABLE,
+	};
+
+	if (gpio_config(&out) != ESP_OK) {
+		ESP_LOGW(TAG, "Could not drive the IR and buzzer pins low");
+		return;
+	}
+	gpio_set_level(PIN_IR_TX, 0);
+	gpio_set_level(PIN_BUZZER, 0);
+	(void)gpio_sleep_sel_dis(PIN_IR_TX);
+	(void)gpio_sleep_sel_dis(PIN_BUZZER);
+}
+
 esp_err_t board_init(void)
 {
+	_quiet_pins_init();
 	ESP_RETURN_ON_ERROR(_i2c_init(), TAG, "i2c");
 	ESP_RETURN_ON_ERROR(_expander_init(), TAG, "expander");
 	ESP_RETURN_ON_ERROR(_lcd_init(), TAG, "lcd");
