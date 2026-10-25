@@ -428,6 +428,11 @@ esp_err_t board_init(void)
 	if (_lora_sleep() != ESP_OK) {
 		ESP_LOGW(TAG, "Could not put the LoRa radio to sleep");
 	}
+	/*
+	 * Arduino names E0.P7 LORA_ENABLE, M5Stack SX_NRST; either way, low
+	 * keeps the unused radio from drawing. Measured in an unplugged run.
+	 */
+	board_lora_enable(false);
 	_imu_idle();
 	if (_charger_init() != ESP_OK) {
 		ESP_LOGW(TAG, "Charger did not answer; charging not configured");
