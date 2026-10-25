@@ -99,6 +99,7 @@ static const char *TAG = "board";
 #define GAUGE_ADDR      0x55
 #define GAUGE_REG_VOLT  0x08
 #define GAUGE_REG_CURR  0x0C
+#define GAUGE_REG_AVG   0x14
 #define GAUGE_REG_TEMP  0x28
 #define GAUGE_REG_RM    0x10
 #define GAUGE_REG_FCC   0x12
@@ -609,6 +610,18 @@ bool board_battery_read(uint16_t *mv, int16_t *ma)
 	}
 
 	*mv = v[0] | (v[1] << 8);
+	*ma = (int16_t)(c[0] | (c[1] << 8));
+	return true;
+}
+
+bool board_battery_avg_ma(int16_t *ma)
+{
+	uint8_t c[2];
+
+	if (_reg_read(_gauge, GAUGE_REG_AVG, c, 2) != ESP_OK) {
+		return false;
+	}
+
 	*ma = (int16_t)(c[0] | (c[1] << 8));
 	return true;
 }
