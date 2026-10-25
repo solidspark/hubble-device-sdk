@@ -37,16 +37,24 @@ struct floor_sample {
 };
 
 enum floor_step {
-	STEP_BASELINE,
-	STEP_LORA_SLEEP,
-	STEP_GROVE_ON,
+	STEP_MONITOR,
+	STEP_MONITOR_FAST,
+	STEP_MONITOR_SLOW,
 	STEP_COUNT,
 };
 
+/*
+ * The FT6336 monitor-mode scan setting (0x89) defaults to 40. Its unit is
+ * not documented, so step it both ways and see which way the draw drops.
+ */
+#define TOUCH_REG_PERIOD_MONITOR 0x89
+
+static const uint8_t _step_period[STEP_COUNT] = {40, 4, 200};
+
 static const char *const _step_names[STEP_COUNT] = {
-	"baseline (LoRa E0.7 low, touch hibernate, Grove off)",
-	"LoRa E0.7 high, radio in SPI sleep",
-	"Grove power E1.P2 on",
+	"touch monitor, 0x89 = 40 (default)",
+	"touch monitor, 0x89 = 4",
+	"touch monitor, 0x89 = 200",
 };
 
 struct floor_run {
@@ -140,18 +148,16 @@ void app_sleep_floor_run(void)
 		step = STEP_COUNT - 1;
 	}
 
-	board_lora_hold_reset(step != STEP_LORA_SLEEP);
 	if (board_init() != ESP_OK) {
 		ESP_LOGE(TAG, "board init failed");
 	}
 	_quiet();
-	if (step == STEP_GROVE_ON) {
-		board_grove_power(true);
-	}
+	board_touch_reg_write(TOUCH_REG_PERIOD_MONITOR, _step_period[step]);
 
 	if (board_usb_powered()) {
 		ESP_LOGW(TAG, "sleep-floor test build: the sample does not run");
 		_print();
+		board_touch_reg_log();
 		while (board_usb_powered()) {
 			vTaskDelay(pdMS_TO_TICKS(1000));
 		}
