@@ -450,6 +450,13 @@ static void _quiet_pins_init(void)
 	(void)gpio_sleep_sel_dis(PIN_BUZZER);
 }
 
+static bool _lora_hold_reset = true;
+
+void board_lora_hold_reset(bool hold)
+{
+	_lora_hold_reset = hold;
+}
+
 esp_err_t board_init(void)
 {
 	_quiet_pins_init();
@@ -463,7 +470,9 @@ esp_err_t board_init(void)
 	 * Arduino names E0.P7 LORA_ENABLE, M5Stack SX_NRST; either way, low
 	 * keeps the unused radio from drawing. Measured in an unplugged run.
 	 */
-	board_lora_enable(false);
+	if (_lora_hold_reset) {
+		board_lora_enable(false);
+	}
 	/* The sample uses nothing on the Grove port; keep its supply off. */
 	board_grove_power(false);
 	_imu_idle();
@@ -492,6 +501,11 @@ esp_lcd_panel_handle_t board_lcd_panel(void)
 void board_touch_set_active(bool active)
 {
 	(void)_reg_write(_touch, TOUCH_REG_PMODE, active ? 0 : 1);
+}
+
+void board_touch_hibernate(void)
+{
+	(void)_reg_write(_touch, TOUCH_REG_PMODE, 3);
 }
 
 bool board_touch_read(uint16_t *x, uint16_t *y)
