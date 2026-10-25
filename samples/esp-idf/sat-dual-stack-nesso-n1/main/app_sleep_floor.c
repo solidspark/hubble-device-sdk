@@ -40,16 +40,13 @@ enum floor_step {
 	STEP_BASELINE,
 	STEP_LORA_SLEEP,
 	STEP_GROVE_ON,
-	STEP_TOUCH_HIBERNATE,
 	STEP_COUNT,
 };
 
-/* Touch hibernate goes last: only a power cycle undoes it. */
 static const char *const _step_names[STEP_COUNT] = {
-	"baseline (LoRa E0.7 low, touch monitor, Grove off)",
+	"baseline (LoRa E0.7 low, touch hibernate, Grove off)",
 	"LoRa E0.7 high, radio in SPI sleep",
 	"Grove power E1.P2 on",
-	"touch controller in hibernate",
 };
 
 struct floor_run {
@@ -150,9 +147,6 @@ void app_sleep_floor_run(void)
 	_quiet();
 	if (step == STEP_GROVE_ON) {
 		board_grove_power(true);
-	}
-	if (step == STEP_TOUCH_HIBERNATE) {
-		board_touch_hibernate();
 	}
 
 	if (board_usb_powered()) {

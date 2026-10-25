@@ -30,6 +30,7 @@ static const char *TAG = "board";
 #define PIN_LCD_DC      16
 #define PIN_LCD_CS      17
 #define PIN_LORA_CS     23
+#define PIN_TOUCH_INT   3
 #define PIN_LORA_BUSY   19
 #define PIN_IR_TX       9
 #define PIN_BUZZER      11
@@ -479,6 +480,8 @@ esp_err_t board_init(void)
 	if (_charger_init() != ESP_OK) {
 		ESP_LOGW(TAG, "Charger did not answer; charging not configured");
 	}
+	/* It may still be in hibernate from before a reset. */
+	board_touch_set_active(true);
 	board_backlight_set(true);
 	return ESP_OK;
 }
@@ -494,18 +497,49 @@ esp_lcd_panel_handle_t board_lcd_panel(void)
 }
 
 /*
- * Monitor mode rather than hibernate: leaving hibernate needs the
- * controller's reset line, which this board does not route to a pin the
- * sample controls.
+ * Hibernate, not monitor mode: in monitor mode this board's FT6336 drew
+ * about 13 mA, the whole of the deep-sleep floor in an unplugged run; in
+ * hibernate the gauge reads 0 mA. The reset line is not routed, but a
+ * low pulse on INT (GPIO 3) wakes it: 1 ms did not, 5 ms did.
  */
-void board_touch_set_active(bool active)
+#define TOUCH_PMODE_ACTIVE    0
+#define TOUCH_PMODE_HIBERNATE 3
+#define TOUCH_WAKE_PULSE_MS   10
+#define TOUCH_WAKE_WAIT_MS    300
+
+static void _touch_wake(void)
 {
-	(void)_reg_write(_touch, TOUCH_REG_PMODE, active ? 0 : 1);
+	gpio_config_t out = {
+		.pin_bit_mask = 1ULL << PIN_TOUCH_INT,
+		.mode = GPIO_MODE_OUTPUT,
+	};
+	gpio_config_t in = {
+		.pin_bit_mask = 1ULL << PIN_TOUCH_INT,
+		.mode = GPIO_MODE_INPUT,
+		.pull_up_en = GPIO_PULLUP_ENABLE,
+	};
+
+	gpio_set_level(PIN_TOUCH_INT, 0);
+	(void)gpio_config(&out);
+	vTaskDelay(pdMS_TO_TICKS(TOUCH_WAKE_PULSE_MS));
+	(void)gpio_config(&in);
+
+	for (int waited = 0; waited < TOUCH_WAKE_WAIT_MS; waited += 10) {
+		if (i2c_master_probe(_i2c_bus, TOUCH_ADDR, 20) == ESP_OK) {
+			return;
+		}
+		vTaskDelay(pdMS_TO_TICKS(10));
+	}
+	ESP_LOGW(TAG, "touch did not wake");
 }
 
-void board_touch_hibernate(void)
+void board_touch_set_active(bool active)
 {
-	(void)_reg_write(_touch, TOUCH_REG_PMODE, 3);
+	if (active) {
+		_touch_wake();
+	}
+	(void)_reg_write(_touch, TOUCH_REG_PMODE,
+			 active ? TOUCH_PMODE_ACTIVE : TOUCH_PMODE_HIBERNATE);
 }
 
 bool board_touch_read(uint16_t *x, uint16_t *y)
