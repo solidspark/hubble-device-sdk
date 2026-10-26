@@ -38,18 +38,27 @@ static const char *TAG = "sntp";
 #define BIT_GOT_IP              BIT0
 #define BIT_GAVE_UP             BIT1
 
+struct wifi_net {
+	const char *ssid;
+	const char *password;
+};
+
+static const struct wifi_net _nets[] = {
+	{CONFIG_HUBBLE_SAMPLE_WIFI_SSID, CONFIG_HUBBLE_SAMPLE_WIFI_PASSWORD},
+	{CONFIG_HUBBLE_SAMPLE_WIFI2_SSID, CONFIG_HUBBLE_SAMPLE_WIFI2_PASSWORD},
+};
+
 static EventGroupHandle_t _events;
 static int _retries;
 
 /* Channel the home network was found on at boot; 0 scans all channels. */
 static uint8_t _home_channel;
+static bool _joined_home;
 
 static void _wifi_event_cb(void *arg, esp_event_base_t base, int32_t id,
 			   void *data)
 {
-	if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-		(void)esp_wifi_connect();
-	} else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+	if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
 		if (++_retries <= WIFI_MAX_RETRIES) {
 			(void)esp_wifi_connect();
 		} else {
@@ -64,6 +73,21 @@ static void _wifi_event_cb(void *arg, esp_event_base_t base, int32_t id,
 }
 
 /* Days since 1970-01-01 for a civil date; newlib has no timegm(). */
+static bool _wifi_in_range(const char *ssid)
+{
+	wifi_scan_config_t scan = {
+		.ssid = (uint8_t *)ssid,
+		.scan_type = WIFI_SCAN_TYPE_ACTIVE,
+	};
+	uint16_t found = 0;
+
+	if (esp_wifi_scan_start(&scan, true) == ESP_OK) {
+		(void)esp_wifi_scan_get_ap_num(&found);
+	}
+	(void)esp_wifi_clear_ap_list();
+	return found > 0;
+}
+
 static int64_t _days_from_civil(int y, unsigned m, unsigned d)
 {
 	int64_t era;
@@ -134,7 +158,7 @@ bool app_wifi_home_seen(void)
 	uint16_t found = 0;
 	esp_err_t err;
 
-	if (!app_sntp_configured()) {
+	if (strlen(CONFIG_HUBBLE_SAMPLE_WIFI_SSID) == 0) {
 		return false;
 	}
 
@@ -160,9 +184,15 @@ bool app_wifi_home_seen(void)
 	return found > 0;
 }
 
+bool app_wifi_joined_home(void)
+{
+	return _joined_home;
+}
+
 bool app_sntp_configured(void)
 {
-	return strlen(CONFIG_HUBBLE_SAMPLE_WIFI_SSID) > 0;
+	return strlen(CONFIG_HUBBLE_SAMPLE_WIFI_SSID) > 0 ||
+	       strlen(CONFIG_HUBBLE_SAMPLE_WIFI2_SSID) > 0;
 }
 
 uint64_t app_sntp_time_get(void)
@@ -173,6 +203,7 @@ uint64_t app_sntp_time_get(void)
 					"time.google.com",
 					"time.cloudflare.com"));
 	wifi_config_t wifi_cfg = {0};
+	const struct wifi_net *net = NULL;
 	esp_event_handler_instance_t wifi_h = NULL;
 	esp_event_handler_instance_t ip_h = NULL;
 	esp_netif_t *netif = NULL;
@@ -214,20 +245,35 @@ uint64_t app_sntp_time_get(void)
 	(void)esp_event_handler_instance_register(
 		IP_EVENT, IP_EVENT_STA_GOT_IP, _wifi_event_cb, NULL, &ip_h);
 
-	strlcpy((char *)wifi_cfg.sta.ssid, CONFIG_HUBBLE_SAMPLE_WIFI_SSID,
-		sizeof(wifi_cfg.sta.ssid));
-	strlcpy((char *)wifi_cfg.sta.password,
-		CONFIG_HUBBLE_SAMPLE_WIFI_PASSWORD,
-		sizeof(wifi_cfg.sta.password));
-
 	if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK ||
-	    esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg) != ESP_OK ||
 	    esp_wifi_start() != ESP_OK) {
 		ESP_LOGE(TAG, "Wi-Fi start failed");
 		goto out_wifi;
 	}
 
-	ESP_LOGI(TAG, "Joining \"%s\"...", CONFIG_HUBBLE_SAMPLE_WIFI_SSID);
+	for (size_t i = 0; i < sizeof(_nets) / sizeof(_nets[0]); i++) {
+		if (strlen(_nets[i].ssid) > 0 && _wifi_in_range(_nets[i].ssid)) {
+			net = &_nets[i];
+			break;
+		}
+	}
+	if (net == NULL) {
+		ESP_LOGW(TAG, "No configured Wi-Fi network in range");
+		goto out_stop;
+	}
+
+	strlcpy((char *)wifi_cfg.sta.ssid, net->ssid,
+		sizeof(wifi_cfg.sta.ssid));
+	strlcpy((char *)wifi_cfg.sta.password, net->password,
+		sizeof(wifi_cfg.sta.password));
+	if (esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg) != ESP_OK ||
+	    esp_wifi_connect() != ESP_OK) {
+		ESP_LOGE(TAG, "Wi-Fi connect failed");
+		goto out_stop;
+	}
+
+	ESP_LOGI(TAG, "Joining \"%s\"...", net->ssid);
+	_joined_home = net == &_nets[0];
 	bits = xEventGroupWaitBits(_events, BIT_GOT_IP | BIT_GAVE_UP, pdFALSE,
 				   pdFALSE,
 				   pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
@@ -239,7 +285,7 @@ uint64_t app_sntp_time_get(void)
 	{
 		wifi_ap_record_t ap;
 
-		if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+		if (net == &_nets[0] && esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
 			_home_channel = ap.primary;
 		}
 	}

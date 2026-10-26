@@ -316,8 +316,7 @@ static bool _setup_resume(void)
 	if (now_s == 0) {
 		goto need_companion;
 	}
-	/* Joining it just now means the home network is in range. */
-	_home_set(true);
+	_home_set(app_wifi_joined_home());
 
 	if (now_s < saved_at_s || now_s - saved_at_s > SETUP_MAX_AGE_S) {
 		ESP_LOGW(APP_TAG, "Saved setup is %llu days old; waiting for "

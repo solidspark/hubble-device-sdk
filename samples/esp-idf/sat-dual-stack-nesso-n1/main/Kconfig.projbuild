@@ -32,6 +32,18 @@ menu "Sat Dual Stack Nesso N1 Sample Configuration"
     string "Wi-Fi password for time sync"
     default ""
 
+    config HUBBLE_SAMPLE_WIFI2_SSID
+    string "Second Wi-Fi SSID for time sync"
+    default ""
+    help
+        Tried when the first network is not in range, for example away
+        from home. Only the first network counts as home for the slower
+        beacon.
+
+    config HUBBLE_SAMPLE_WIFI2_PASSWORD
+    string "Second Wi-Fi password for time sync"
+    default ""
+
     config HUBBLE_SAMPLE_SNTP_SERVER
     string "SNTP server"
     default "pool.ntp.org"
