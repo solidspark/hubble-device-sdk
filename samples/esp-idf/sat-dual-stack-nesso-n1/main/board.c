@@ -16,6 +16,8 @@
 #include "esp_check.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
+#include "esp_timer.h"
 
 #include "board.h"
 
@@ -424,6 +426,42 @@ static void _imu_idle(void)
 }
 
 /*
+ * Hibernate while the screen is dark. Monitor mode measured about 13 mA in
+ * an unplugged run, hibernate under the gauge's 1 mA resolution. The
+ * reset line is not routed; the FT6x36 datasheet's other way out is a
+ * 0.5-1 ms low pulse on INT (GPIO 3), after which the controller needs
+ * 300 ms before it reports touches, so reads wait that out instead of
+ * blocking the caller.
+ */
+#define PIN_TOUCH_INT          3
+#define TOUCH_PMODE_ACTIVE     0
+#define TOUCH_PMODE_HIBERNATE  3
+#define TOUCH_WAKE_PULSE_US    800
+#define TOUCH_WAKE_SETTLE_US   (350 * 1000)
+
+static bool _touch_asleep;
+static int64_t _touch_ready_us;
+
+static void _touch_wake_pulse(void)
+{
+	gpio_config_t out = {
+		.pin_bit_mask = 1ULL << PIN_TOUCH_INT,
+		.mode = GPIO_MODE_OUTPUT,
+	};
+	gpio_config_t in = {
+		.pin_bit_mask = 1ULL << PIN_TOUCH_INT,
+		.mode = GPIO_MODE_INPUT,
+		.pull_up_en = GPIO_PULLUP_ENABLE,
+	};
+
+	gpio_set_level(PIN_TOUCH_INT, 0);
+	(void)gpio_config(&out);
+	esp_rom_delay_us(TOUCH_WAKE_PULSE_US);
+	(void)gpio_config(&in);
+	_touch_ready_us = esp_timer_get_time() + TOUCH_WAKE_SETTLE_US;
+}
+
+/*
  * The IR LED (GPIO 9) and the active buzzer (GPIO 11) are both active high
  * (Zephyr's arduino_nesso_n1 devicetree). GPIO 9 is the boot strap pin, so
  * its pull-up is on at reset and the IR LED would draw continuously. Drive
@@ -470,6 +508,10 @@ esp_err_t board_init(void)
 	if (_charger_init() != ESP_OK) {
 		ESP_LOGW(TAG, "Charger did not answer; charging not configured");
 	}
+	/* A chip reset leaves touch powered, so it may still be hibernating. */
+	if (i2c_master_probe(_i2c_bus, TOUCH_ADDR, 50) != ESP_OK) {
+		_touch_wake_pulse();
+	}
 	board_backlight_set(true);
 	return ESP_OK;
 }
@@ -484,18 +526,18 @@ esp_lcd_panel_handle_t board_lcd_panel(void)
 	return _lcd_panel;
 }
 
-/*
- * Never hibernate: the reset line is not routed, and a low pulse on INT
- * (GPIO 3) brings the controller back only partly. It answers on I2C but
- * reports no touches until a power cycle.
- */
-#define TOUCH_PMODE_ACTIVE  0
-#define TOUCH_PMODE_MONITOR 1
-
 void board_touch_set_active(bool active)
 {
-	(void)_reg_write(_touch, TOUCH_REG_PMODE,
-			 active ? TOUCH_PMODE_ACTIVE : TOUCH_PMODE_MONITOR);
+	if (active == !_touch_asleep) {
+		return;
+	}
+	_touch_asleep = !active;
+	if (active) {
+		_touch_wake_pulse();
+	} else {
+		(void)_reg_write(_touch, TOUCH_REG_PMODE,
+				 TOUCH_PMODE_HIBERNATE);
+	}
 }
 
 void board_touch_reg_write(uint8_t reg, uint8_t val)
@@ -522,6 +564,9 @@ bool board_touch_read(uint16_t *x, uint16_t *y)
 	uint16_t raw_x;
 	uint16_t raw_y;
 
+	if (_touch_asleep || esp_timer_get_time() < _touch_ready_us) {
+		return false;
+	}
 	if (_reg_read(_touch, TOUCH_REG_STAT, buf, sizeof(buf)) != ESP_OK) {
 		return false;
 	}
