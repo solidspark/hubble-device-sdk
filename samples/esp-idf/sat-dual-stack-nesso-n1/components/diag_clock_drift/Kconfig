@@ -1,0 +1,32 @@
+# Copyright (c) 2026 Hubble Network, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+menu "Clock drift diagnostic"
+
+    config DIAG_CLOCK_DRIFT
+    bool "Measure the crystal against USB SOF and log satellite TX"
+    default n
+    depends on SOC_USB_SERIAL_JTAG_SUPPORTED
+    help
+        Prints DRIFT lines (crystal offset against the host's 1 kHz USB
+        start-of-frame, plus die temperature) every window, and a TX line
+        for each satellite packet. Off in normal builds.
+
+    config DIAG_CLOCK_DRIFT_WINDOW_S
+    int "Measurement window, in seconds"
+    default 5
+    range 1 60
+    depends on DIAG_CLOCK_DRIFT
+    help
+        Longer windows give finer ppm resolution and fewer samples.
+
+    config DIAG_TX_START_DELAY_S
+    int "Hold the first satellite packet until this many seconds after boot"
+    default 0
+    range 0 3600
+    depends on DIAG_CLOCK_DRIFT
+    help
+        0 leaves TX timing as it is. Use it to see whether corrections
+        follow time since power-on rather than the first transmissions.
+
+endmenu

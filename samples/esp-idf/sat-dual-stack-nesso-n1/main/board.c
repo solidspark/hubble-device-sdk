@@ -493,6 +493,12 @@ esp_err_t board_init(void)
 	_quiet_pins_init();
 	ESP_RETURN_ON_ERROR(_i2c_init(), TAG, "i2c");
 	ESP_RETURN_ON_ERROR(_expander_init(), TAG, "expander");
+#ifdef CONFIG_DIAG_MINIMAL_INIT
+	board_lora_enable(false);
+	board_grove_power(false);
+	ESP_LOGW(TAG, "Minimal init: no display, LoRa held in reset");
+	return ESP_OK;
+#endif
 	ESP_RETURN_ON_ERROR(_lcd_init(), TAG, "lcd");
 	if (_lora_sleep() != ESP_OK) {
 		ESP_LOGW(TAG, "Could not put the LoRa radio to sleep");
