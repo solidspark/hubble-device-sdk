@@ -1,7 +1,7 @@
 # Hubble Network Satellite Dual-Stack Sample for the Arduino Nesso N1 on ESP-IDF
 
 This sample runs **BLE and the Hubble Satellite Network** on an Arduino Nesso N1
-and shows the radio state on its touchscreen.
+and shows the radio state on its screen.
 
 ## Requirements
 
@@ -25,14 +25,14 @@ and shows the radio state on its touchscreen.
 ## Overview
 
 This sample is [sat-dual-stack](../sat-dual-stack) with a user interface for the
-Nesso N1's 1.14" 240 × 135 touchscreen and front buttons. It is designed to:
+Nesso N1's 1.14" 240 × 135 screen and front buttons. It is designed to:
 
 - Demonstrate BLE and Hubble Satellite operation on a self-contained,
   battery-powered device.
 - Show each stage of the dual-stack life-cycle on screen: provisioning, the
   countdown to the next pass, satellite transmission, and BLE beaconing.
-- Show how to drive the Nesso N1's display, touch panel, IO expanders, LED,
-  battery charger and fuel gauge from ESP-IDF.
+- Show how to drive the Nesso N1's display, IO expanders, LED, battery
+  charger and fuel gauge from ESP-IDF.
 
 | Screen | Shown when |
 | --- | --- |
@@ -48,31 +48,36 @@ while the battery charges.
 
 ### Controls
 
-- **Tap the marker at the top of the ring** to choose **Satellite** (satellite
-  at each pass, BLE beacon between passes) or **Terrestrial** (BLE beacon only).
-- **Click a front button** to close the menu, or to turn the screen off or on
-  when the menu is closed. The radio keeps running with the screen off. The
-  screen also turns off after 10 s idle; only a front button wakes it, since
-  the touch controller drops to low-power monitor mode while dark.
-- **Double-click a front button** to open or close the menu.
+The sample uses the two front buttons only; either one works. The touch panel
+is put in hibernate at boot and never read.
 
-The menu shows one value at a time: the value on the left, **+** and **−** on
-the right. Swipe up or down, or tap the top or bottom of the left side, to move
-between values.
+| Action | Outside setup | In setup |
+| --- | --- | --- |
+| Click | Turn the screen off or on. | Next value. |
+| Double-click | Open setup. | Change the value. |
+| Hold 1 s | Nothing. | Save, close setup and turn the screen off. |
 
-| Value | + and − |
+The radio keeps running with the screen off. The screen turns off after 10 s
+idle. Setup closes after 30 s idle without saving, and any change goes back to
+the saved value.
+
+Setup shows one value at a time on the left, with the button legend on the
+right.
+
+| Value | Double-click |
 | --- | --- |
-| Next pass | Browse the next three passes. |
+| Next pass | Show the next of three passes. |
 | Mode | Satellite or terrestrial. |
 | Packets per pass | 16 (`HUBBLE_SAT_RELIABILITY_HIGH`, 10 s apart) or 8 (`HUBBLE_SAT_RELIABILITY_NORMAL`, 20 s apart). |
 | Sat Tx power | Read only: 20 dBm at the chip. |
-| Beacon every | 0.5, 1, 1.5, 2, 5 or 10 s. |
+| Beacon every | Step through 0.5, 1, 1.5, 2, 5 and 10 s. Fixed while home Wi-Fi is in range. |
 | Beacons today | Read only. |
 | Battery | Read only: charge, current, voltage and temperature. |
 | Payload | Read only. |
-| Saved setup | Press twice to clear the saved location and ephemeris and restart into setup. |
+| Saved setup | Twice to clear the saved location and ephemeris and restart into setup. |
 
-Menu settings are held in RAM and reset on reboot.
+Mode, packets per pass and beacon interval are saved to flash on hold and
+restored at boot. Clearing the saved setup keeps them.
 
 > [!NOTE]
 > All commands in this README are run from the sample folder containing this file:
@@ -349,7 +354,7 @@ Turn `CONFIG_HUBBLE_SAMPLE_DEBUG` back off to transmit at each predicted pass.
 | Peripheral | Connection |
 | --- | --- |
 | LCD | ST7789 on SPI2: SCLK 20, MOSI 21, DC 16, CS 17. Reset and backlight on expander 0x44 P1 and P6. |
-| Touch | FT6336U at 0x38 on I2C: SDA 10, SCL 8. |
+| Touch | FT6336U at 0x38 on I2C: SDA 10, SCL 8. Hibernated at boot and not used. |
 | Front buttons | Expander 0x43 P0 and P1, active low with pull-ups. Either button works. |
 | LED | Expander 0x44 P7, active low. On during a satellite transmission. |
 | Battery | BQ27220 fuel gauge at 0x55, AW32001 charger at 0x49. The sample enables charging and turns off the charger watchdog at boot, and logs the battery every minute. |

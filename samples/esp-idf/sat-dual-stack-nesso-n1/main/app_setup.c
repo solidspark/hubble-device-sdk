@@ -18,6 +18,8 @@ static const char *TAG = "setup";
 #define KEY_POS        "pos"
 #define KEY_ORB        "orb"
 #define KEY_SAVED_AT   "saved_at"
+#define PREFS_NS       "hubble_prefs"
+#define KEY_PREFS      "prefs"
 
 int app_setup_save(const struct hubble_sat_device_pos *pos,
 		   const struct hubble_sat_orbital_params *orb, uint8_t count,
@@ -90,4 +92,40 @@ void app_setup_clear(void)
 	(void)nvs_commit(h);
 	nvs_close(h);
 	ESP_LOGI(TAG, "Cleared saved setup");
+}
+
+int app_prefs_store(const struct app_prefs *prefs)
+{
+	nvs_handle_t h;
+	esp_err_t err;
+
+	err = nvs_open(PREFS_NS, NVS_READWRITE, &h);
+	if (err == ESP_OK) {
+		err = nvs_set_blob(h, KEY_PREFS, prefs, sizeof(*prefs));
+		if (err == ESP_OK) {
+			err = nvs_commit(h);
+		}
+		nvs_close(h);
+	}
+	if (err != ESP_OK) {
+		ESP_LOGE(TAG, "Saving settings failed (%s)",
+			 esp_err_to_name(err));
+		return -EIO;
+	}
+	return 0;
+}
+
+bool app_prefs_load(struct app_prefs *prefs)
+{
+	size_t len = sizeof(*prefs);
+	nvs_handle_t h;
+	bool ok;
+
+	if (nvs_open(PREFS_NS, NVS_READONLY, &h) != ESP_OK) {
+		return false;
+	}
+	ok = nvs_get_blob(h, KEY_PREFS, prefs, &len) == ESP_OK &&
+	     len == sizeof(*prefs);
+	nvs_close(h);
+	return ok;
 }

@@ -172,6 +172,45 @@ void app_beacon_interval_set(uint32_t interval_ms)
 	}
 }
 
+static void _prefs_get(struct app_prefs *p)
+{
+	if (app_prefs_load(p) && p->radio <= APP_RADIO_TER &&
+	    p->away_interval_ms >= 500 && p->away_interval_ms <= 10000) {
+		return;
+	}
+	p->radio = APP_RADIO_SAT;
+	p->sat_high = true;
+	p->away_interval_ms = BEACON_INTERVAL_MS;
+}
+
+void app_prefs_save(void)
+{
+	struct app_prefs p = {0};
+
+	portENTER_CRITICAL(&_state_lock);
+	p.radio = _state.radio;
+	p.sat_high = _state.sat_high;
+	portEXIT_CRITICAL(&_state_lock);
+	p.away_interval_ms = _away_interval_ms;
+
+	if (app_prefs_store(&p) == 0) {
+		ESP_LOGI(APP_TAG, "Settings saved: %s, %s packets, beacon %lu ms",
+			 p.radio == APP_RADIO_SAT ? "SAT" : "BLE",
+			 p.sat_high ? "16" : "8",
+			 (unsigned long)p.away_interval_ms);
+	}
+}
+
+void app_prefs_revert(void)
+{
+	struct app_prefs p;
+
+	_prefs_get(&p);
+	app_radio_request(p.radio);
+	app_sat_high_set(p.sat_high);
+	app_beacon_interval_set(p.away_interval_ms);
+}
+
 static void _home_set(bool home)
 {
 	uint32_t interval_ms = home ? CONFIG_HUBBLE_SAMPLE_HOME_BEACON_INTERVAL_MS
@@ -563,6 +602,7 @@ void app_main(void)
 {
 	esp_timer_create_args_t sat_timer_args = {0};
 	struct app_state state;
+	struct app_prefs prefs;
 	bool resumed;
 	esp_err_t err;
 	int ret;
@@ -579,6 +619,13 @@ void app_main(void)
 #ifdef CONFIG_HUBBLE_SAMPLE_SLEEP_FLOOR_TEST
 	app_sleep_floor_run();
 #endif
+
+	/* No other task runs yet, so the state needs no lock here. */
+	_prefs_get(&prefs);
+	_state.radio = prefs.radio;
+	_state.sat_high = prefs.sat_high;
+	_state.beacon_interval_ms = prefs.away_interval_ms;
+	_away_interval_ms = prefs.away_interval_ms;
 
 	_pm_init();
 
@@ -656,6 +703,9 @@ void app_main(void)
 	if (ret != 0) {
 		ESP_LOGE(APP_TAG, "Failed to init BLE, ret: %d", ret);
 		return;
+	}
+	if (_away_interval_ms != BEACON_INTERVAL_MS) {
+		app_beacon_interval_set(_away_interval_ms);
 	}
 
 	if (resumed) {

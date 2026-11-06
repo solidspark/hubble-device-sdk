@@ -53,6 +53,8 @@ extern const lv_image_dsc_t hubble_logo;
 
 /* Front key: a click is a short press; two within the gap is a double. */
 #define KEY_POLL_MS    20
+/* Holding this long in setup saves and exits. */
+#define KEY_HOLD_MS    1000
 /* Slower key polling while dark; only the button wakes the screen then. */
 #define KEY_POLL_OFF_MS 50
 #define KEY_CLICK_MS   500
@@ -67,8 +69,10 @@ extern const lv_image_dsc_t hubble_logo;
 #define BATT_Y         6
 #define BATT_REFRESH   50
 
-/* The backlight turns off after this long with no touch or key press. */
+/* The backlight turns off after this long with no key press. */
 #define SCREEN_IDLE_MS 10000
+/* Setup closes without saving after this long with no key press. */
+#define SETUP_IDLE_MS  30000
 
 /* Lead-in to a pass: wake this early and flash blurple on each second. */
 #define PASS_LEAD_MS   10000
@@ -84,7 +88,6 @@ extern const lv_image_dsc_t hubble_logo;
 #define MS_PER_DAY     (24ULL * MS_PER_HOUR)
 
 static lv_display_t *_disp;
-static lv_indev_t *_indev;
 static lv_timer_t *_ui_timer;
 
 static lv_obj_t *_boot;
@@ -134,8 +137,7 @@ static lv_obj_t *_menu;
 static lv_obj_t *_menu_title;
 static lv_obj_t *_menu_value;
 static lv_obj_t *_menu_sub;
-static lv_obj_t *_menu_plus;
-static lv_obj_t *_menu_minus;
+static lv_obj_t *_menu_change;
 static lv_obj_t *_menu_dots[MENU_COUNT];
 static int _menu_idx;
 static int _menu_pass;
@@ -145,7 +147,7 @@ static bool _setup_armed;
 static bool _screen_off;
 static uint32_t _last_activity;
 
-/* Held while the screen is on so drawing and touch stay responsive. */
+/* Held while the screen is on so drawing and keys stay responsive. */
 static esp_pm_lock_handle_t _ui_sleep_lock;
 static esp_pm_lock_handle_t _ui_cpu_lock;
 static bool _ui_locks_held;
@@ -892,11 +894,12 @@ static void _menu_text(const struct app_state *s, uint64_t now, char *title,
 			snprintf(sub, len, "Saved after the companion runs");
 		} else if (_setup_armed) {
 			snprintf(value, len, "CLEAR?");
-			snprintf(sub, len, "Press again to clear and restart");
+			snprintf(sub, len, "Double-press again to clear and "
+					   "restart");
 		} else {
 			snprintf(value, len, "SAVED");
-			snprintf(sub, len, "%u satellites, %llu d old. Press to "
-					   "clear",
+			snprintf(sub, len, "%u satellites, %llu d old. "
+					   "Double-press to clear",
 				 s->setup_sats,
 				 now > s->setup_saved_at_s * MS_PER_SEC
 					 ? (now / MS_PER_SEC -
@@ -939,9 +942,7 @@ static void _menu_render(void)
 	_label_set(_menu_sub, sub);
 
 	editable = _menu_editable(_menu_idx, &s);
-	lv_obj_set_style_opa(_menu_plus, editable ? LV_OPA_COVER : LV_OPA_20,
-			     0);
-	lv_obj_set_style_opa(_menu_minus, editable ? LV_OPA_COVER : LV_OPA_20,
+	lv_obj_set_style_opa(_menu_change, editable ? LV_OPA_COVER : LV_OPA_20,
 			     0);
 
 	for (int i = 0; i < MENU_COUNT; i++) {
@@ -983,10 +984,8 @@ static void _menu_step(int dir)
 		}
 		break;
 	case MENU_BEACON:
-		i = _beacon_step_idx(s.beacon_interval_ms) + dir;
-		if (i < 0 || i >= BEACON_STEPS) {
-			return;
-		}
+		i = (_beacon_step_idx(s.beacon_interval_ms) + BEACON_STEPS +
+		     dir) % BEACON_STEPS;
 		app_beacon_interval_set(_beacon_steps_ms[i]);
 		break;
 	default:
@@ -1003,52 +1002,17 @@ static void _menu_move(int dir)
 	_menu_render();
 }
 
-static void _menu_plus_cb(lv_event_t *e)
+/* One legend line in the right column: the key action, then its effect. */
+static lv_obj_t *_menu_legend(int y, const char *keys, const char *effect)
 {
-	_menu_step(+1);
-}
+	lv_obj_t *box = _box(_menu, MENU_SPLIT_X + 1, y,
+			     BOARD_LCD_H_RES - MENU_SPLIT_X - 1, 30);
+	lv_obj_t *l = _label(box, &lv_font_montserrat_12, COLOR_WHITE, 0);
 
-static void _menu_minus_cb(lv_event_t *e)
-{
-	_menu_step(-1);
-}
-
-/* Tapping the top half of the left side goes back, the bottom half on. */
-static void _menu_left_cb(lv_event_t *e)
-{
-	lv_point_t p;
-	lv_dir_t dir;
-
-	if (lv_event_get_code(e) == LV_EVENT_SHORT_CLICKED) {
-		lv_indev_get_point(lv_indev_active(), &p);
-		_menu_move(p.y < BOARD_LCD_V_RES / 2 ? -1 : +1);
-		return;
-	}
-
-	dir = lv_indev_get_gesture_dir(lv_indev_active());
-	if (dir == LV_DIR_TOP) {
-		_menu_move(+1);
-	} else if (dir == LV_DIR_BOTTOM) {
-		_menu_move(-1);
-	}
-}
-
-static lv_obj_t *_menu_key(int y, const char *symbol, lv_event_cb_t cb)
-{
-	lv_obj_t *key = _box(_menu, MENU_SPLIT_X + 1, y,
-			     BOARD_LCD_H_RES - MENU_SPLIT_X - 1,
-			     BOARD_LCD_V_RES / 2);
-	lv_obj_t *l = _label(key, &lv_font_montserrat_28, COLOR_WHITE, 0);
-
-	lv_label_set_text(l, symbol);
+	lv_label_set_text_fmt(l, "%s\n%s", keys, effect);
+	lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_center(l);
-	lv_obj_set_style_bg_color(key, lv_color_hex(0x1C1C1C),
-				  LV_STATE_PRESSED);
-	lv_obj_set_style_bg_opa(key, LV_OPA_COVER, LV_STATE_PRESSED);
-	lv_obj_add_flag(key, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_event_cb(key, cb, LV_EVENT_CLICKED, NULL);
-	lv_obj_add_event_cb(key, cb, LV_EVENT_LONG_PRESSED_REPEAT, NULL);
-	return key;
+	return box;
 }
 
 static void _menu_build(lv_obj_t *scr)
@@ -1060,12 +1024,8 @@ static void _menu_build(lv_obj_t *scr)
 	_menu = _box(scr, 0, 0, BOARD_LCD_H_RES, BOARD_LCD_V_RES);
 	lv_obj_set_style_bg_color(_menu, lv_color_hex(COLOR_BLACK), 0);
 	lv_obj_set_style_bg_opa(_menu, LV_OPA_COVER, 0);
-	lv_obj_add_flag(_menu, LV_OBJ_FLAG_CLICKABLE);
 
 	left = _box(_menu, 0, 0, MENU_SPLIT_X, BOARD_LCD_V_RES);
-	lv_obj_add_flag(left, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_event_cb(left, _menu_left_cb, LV_EVENT_GESTURE, NULL);
-	lv_obj_add_event_cb(left, _menu_left_cb, LV_EVENT_SHORT_CLICKED, NULL);
 
 	for (int i = 0; i < MENU_COUNT; i++) {
 		_menu_dots[i] = _circle(left, 4, 0x444444, LV_OPA_COVER,
@@ -1097,14 +1057,15 @@ static void _menu_build(lv_obj_t *scr)
 	line = _box(_menu, MENU_SPLIT_X, 0, 1, BOARD_LCD_V_RES);
 	lv_obj_set_style_bg_color(line, lv_color_hex(0x2A2A2A), 0);
 	lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
-	line = _box(_menu, MENU_SPLIT_X, BOARD_LCD_V_RES / 2,
-		    BOARD_LCD_H_RES - MENU_SPLIT_X, 1);
-	lv_obj_set_style_bg_color(line, lv_color_hex(0x2A2A2A), 0);
-	lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
 
-	_menu_plus = _menu_key(0, LV_SYMBOL_PLUS, _menu_plus_cb);
-	_menu_minus = _menu_key(BOARD_LCD_V_RES / 2 + 1, LV_SYMBOL_MINUS,
-				_menu_minus_cb);
+	line = _label(_menu, &lv_font_montserrat_10, COLOR_DIM, 2);
+	lv_label_set_text(line, "SETUP");
+	lv_obj_set_width(line, BOARD_LCD_H_RES - MENU_SPLIT_X - 1);
+	lv_obj_set_style_text_align(line, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_set_pos(line, MENU_SPLIT_X + 1, 14);
+	(void)_menu_legend(32, "1x", "next");
+	_menu_change = _menu_legend(66, "2x", "change");
+	(void)_menu_legend(100, "hold", "save");
 
 	lv_obj_add_flag(_menu, LV_OBJ_FLAG_HIDDEN);
 }
@@ -1112,6 +1073,20 @@ static void _menu_build(lv_obj_t *scr)
 static bool _menu_open(void)
 {
 	return !lv_obj_has_flag(_menu, LV_OBJ_FLAG_HIDDEN);
+}
+
+/*
+ * Setup applies each change at once so the effect shows; leaving without a
+ * hold puts back what was saved.
+ */
+static void _menu_close(bool save)
+{
+	_hidden(_menu, true);
+	if (save) {
+		app_prefs_save();
+	} else {
+		app_prefs_revert();
+	}
 }
 
 static void _menu_show(bool show)
@@ -1127,7 +1102,11 @@ static void _menu_show(bool show)
 	_hidden(_menu, !show);
 }
 
-/* ---------- front key: click = screen on/off, double = menu ---------- */
+/*
+ * ---------- front key ----------
+ * Outside setup: click = screen on/off, double = open setup.
+ * In setup: click = next item, double = change it, hold = save and exit.
+ */
 
 static void _ui_locks(bool hold)
 {
@@ -1147,7 +1126,7 @@ static void _ui_locks(bool hold)
 /*
  * Screen off is fully off: backlight, panel (ST7789 sleep-in) and LVGL all
  * stop, and the UI's power locks go, so the chip can light-sleep. The key
- * task keeps watching keys, touch and state changes to wake it.
+ * task keeps watching keys and state changes to wake it.
  */
 static void _screen_set(bool on)
 {
@@ -1162,17 +1141,14 @@ static void _screen_set(bool on)
 		(void)esp_lcd_panel_disp_sleep(board_lcd_panel(), false);
 		(void)lvgl_port_resume();
 		lv_timer_resume(lv_display_get_refr_timer(_disp));
-		lv_timer_resume(lv_indev_get_read_timer(_indev));
 		lv_timer_resume(_ui_timer);
 		lv_obj_invalidate(lv_screen_active());
 		board_backlight_set(true);
-		board_touch_set_active(true);
 	} else {
 		_hidden(_picker, true);
 		board_backlight_set(false);
 		(void)esp_lcd_panel_disp_sleep(board_lcd_panel(), true);
 		_lvgl_idle();
-		board_touch_set_active(false);
 		_ui_locks(false);
 	}
 }
@@ -1186,7 +1162,6 @@ static void _screen_set(bool on)
 static void _lvgl_idle(void)
 {
 	lv_timer_pause(lv_display_get_refr_timer(_disp));
-	lv_timer_pause(lv_indev_get_read_timer(_indev));
 	lv_timer_pause(_ui_timer);
 	(void)lvgl_port_stop();
 	lv_timer_enable(true);
@@ -1201,7 +1176,6 @@ static void _wake(void)
 	lvgl_port_unlock();
 }
 
-/* In the menu a click backs out; elsewhere it turns the screen off or on. */
 static void _key_click(void)
 {
 	if (!lvgl_port_lock(0)) {
@@ -1209,7 +1183,7 @@ static void _key_click(void)
 	}
 	_last_activity = lv_tick_get();
 	if (!_screen_off && _menu_open()) {
-		_menu_show(false);
+		_menu_move(+1);
 	} else {
 		_screen_set(_screen_off);
 	}
@@ -1225,8 +1199,22 @@ static void _key_double(void)
 	if (_screen_off) {
 		_screen_set(true);
 		_menu_show(true);
+	} else if (_menu_open()) {
+		_menu_step(+1);
 	} else {
-		_menu_show(!_menu_open());
+		_menu_show(true);
+	}
+	lvgl_port_unlock();
+}
+
+static void _key_hold(void)
+{
+	if (!lvgl_port_lock(0)) {
+		return;
+	}
+	if (!_screen_off && _menu_open()) {
+		_menu_close(true);
+		_screen_set(false);
 	}
 	lvgl_port_unlock();
 }
@@ -1237,6 +1225,7 @@ static void _key_task(void *arg)
 	struct app_state s;
 	uint64_t lead_woken = 0;
 	bool was_down = false;
+	bool held = false;
 	uint32_t down_at = 0;
 	uint32_t up_at = 0;
 	int clicks = 0;
@@ -1263,6 +1252,11 @@ static void _key_task(void *arg)
 
 		if (down && !was_down) {
 			down_at = now;
+			held = false;
+		} else if (down && !held && now - down_at >= KEY_HOLD_MS) {
+			held = true;
+			clicks = 0;
+			_key_hold();
 		} else if (!down && was_down && now - down_at < KEY_CLICK_MS) {
 			up_at = now;
 			if (++clicks == 2) {
@@ -1302,7 +1296,12 @@ static void _tick_cb(lv_timer_t *t)
 	 * Stay on through a satellite window; the phase change back to the
 	 * countdown restarts the idle timer, so it goes dark 10 s after.
 	 */
-	if (!_screen_off && s.phase != APP_PHASE_TX &&
+	if (!_screen_off && _menu_open()) {
+		if (lv_tick_elaps(_last_activity) > SETUP_IDLE_MS) {
+			_menu_close(false);
+			_screen_set(false);
+		}
+	} else if (!_screen_off && s.phase != APP_PHASE_TX &&
 	    s.phase != APP_PHASE_DONE &&
 	    !(s.phase == APP_PHASE_COUNTDOWN &&
 	      s.next_tx_ms <= now + PASS_LEAD_MS) &&
@@ -1340,23 +1339,6 @@ static void _tick_cb(lv_timer_t *t)
 
 /* ---------- LVGL plumbing ---------- */
 
-static void _touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
-{
-	static uint16_t x;
-	static uint16_t y;
-
-	bool touched = board_touch_read(&x, &y);
-
-	if (touched) {
-		_last_activity = lv_tick_get();
-		data->state = LV_INDEV_STATE_PRESSED;
-	} else {
-		data->state = LV_INDEV_STATE_RELEASED;
-	}
-	data->point.x = x;
-	data->point.y = y;
-}
-
 void ui_screen_force_off(void)
 {
 	if (lvgl_port_lock(0)) {
@@ -1393,7 +1375,6 @@ esp_err_t ui_init(void)
 				.swap_bytes = true,
 			},
 	};
-	lv_indev_t *indev;
 	lv_obj_t *scr;
 
 	if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "ui",
@@ -1413,11 +1394,8 @@ esp_err_t ui_init(void)
 		return ESP_FAIL;
 	}
 
-	indev = lv_indev_create();
-	_indev = indev;
-	lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
-	lv_indev_set_read_cb(indev, _touch_read_cb);
-	lv_indev_set_display(indev, _disp);
+	/* Buttons only: touch stays in hibernate and is never read. */
+	board_touch_set_active(false);
 
 	scr = lv_screen_active();
 	lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);

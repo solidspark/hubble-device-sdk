@@ -79,6 +79,12 @@ void app_beacon_interval_set(uint32_t interval_ms);
 /** @brief Fill the satellite payload from the current sensor readings. */
 void app_payload_build(uint8_t payload[APP_PAYLOAD_LEN]);
 
+/** @brief Save the mode, packets per pass and away beacon interval. */
+void app_prefs_save(void);
+
+/** @brief Put back the settings last saved, or the defaults if none. */
+void app_prefs_revert(void);
+
 /** @brief Erase the saved setup and restart into dual-stack-companion.py setup. */
 void app_setup_forget(void);
 

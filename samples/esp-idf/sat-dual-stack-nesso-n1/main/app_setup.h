@@ -43,4 +43,22 @@ bool app_setup_load(struct hubble_sat_device_pos *pos,
 /** @brief Erase the saved setup. */
 void app_setup_clear(void);
 
+/** @brief Settings chosen in the on-device setup menu. */
+struct app_prefs {
+	uint8_t radio;
+	bool sat_high;
+	uint32_t away_interval_ms;
+};
+
+/**
+ * @brief Save the setup-menu settings. They are kept apart from the saved
+ * setup, so clearing that does not reset them.
+ *
+ * @return 0 on success, negative on an NVS error.
+ */
+int app_prefs_store(const struct app_prefs *prefs);
+
+/** @brief Load the setup-menu settings; false if none were saved. */
+bool app_prefs_load(struct app_prefs *prefs);
+
 #endif /* APP_SETUP_H */
