@@ -366,6 +366,7 @@ Console lines (CSV):
 ```text
 DRIFT,<ms_since_boot>,<frames>,<ticks>,<ppm>,<die_temp_c>,<valid 0|1>
 TX,<ms_since_boot>,<seq>,<die_temp_c>
+HOP,<ms_since_boot>,<seq>,<hop>,<channel>,<mhz>,<symbols>,<offsets>
 ```
 
 - `ticks` are `esp_timer` microseconds (1 µs steps from the 16 MHz systimer),
@@ -385,6 +386,11 @@ TX,<ms_since_boot>,<seq>,<die_temp_c>
 - `seq` counts packets since boot, including each retry. The `TX` temperature
   comes from the latest window, so the send path reads no sensor and does no
   console I/O.
+- A `HOP` line comes after each packet, one per frame. `symbols` are the
+  frame's FSK symbols and `offsets` the value passed to `phy_set_freq` for
+  each one (100 Hz units on the ESP32-C6), both space-separated. A
+  `-Wl,--wrap=phy_set_freq` in IRAM records them only while a satellite packet
+  is being sent, so they show what the radio was set to, not the SDK's formula.
 - The chip does not light-sleep during a window, because light sleep stops the
   crystal. On USB this makes it run warmer than a normal build.
 
@@ -402,7 +408,13 @@ the capture starts at boot. Leave it off for a cold start, where plugging in
 is the boot.
 
 `plot_drift.py` plots ppm and die temperature against time since boot, marks
-invalid windows and each TX, and writes `run1/drift.png`. `--rx` takes a
+invalid windows and each TX, and writes `run1/drift.png`. With `HOP` lines it
+also checks each frame against the SatNet v1 plan and writes
+`run1/hop_check.csv`. It measures the step from the preamble's 63 and 0
+symbols, checks that every symbol in a hop sits on one bin-0 grid, gives the
+bin-0 error against the spec channel (center − 31.5 steps), and adds the
+measured ppm to get the on-air error. It also checks that the channels follow
+one of the four hopping sequences, across retries. `--rx` takes a
 receiver CSV with `rs_corrections`, `decoded` (0|1), and `seq` or `timestamp`
 (unix seconds or ISO 8601). It joins on `seq` if present, else on the nearest
 TX by host wall clock.

@@ -11,6 +11,7 @@
 #include <stdlib.h>
 
 #include "driver/temperature_sensor.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_pm.h"
 #include "esp_timer.h"
@@ -19,6 +20,8 @@
 #include "freertos/task.h"
 #include "soc/soc.h"
 #include "soc/usb_serial_jtag_reg.h"
+
+#include <hubble/sat/packet.h>
 
 #include "diag_clock_drift.h"
 
@@ -40,7 +43,9 @@ static const char *TAG = "drift";
 #define EDGE_PAIR_TOL_US 20
 /* Crystal and host are each good to tens of ppm; more is a bad window. */
 #define PPM_SANE 200.0
-#define TX_QUEUE_LEN 16
+#define EVENT_QUEUE_LEN 16
+/* Preamble, header and the longest PDU: 8 + 6 + 46 symbols. */
+#define MAX_SYMBOLS 64
 
 enum edge_result {
 	EDGE_OK,
@@ -48,16 +53,34 @@ enum edge_result {
 	EDGE_PREEMPTED,
 };
 
-struct tx_event {
-	int64_t ms;
-	uint32_t seq;
+enum event_kind {
+	EVENT_TX,
+	EVENT_HOPS,
 };
 
-static QueueHandle_t _tx_q;
+/* One TX event before a packet, one HOPS event with what the radio was set to. */
+struct event {
+	enum event_kind kind;
+	int64_t ms;
+	uint32_t seq;
+	uint8_t nsym;
+	uint16_t mhz;
+	uint8_t channel[HUBBLE_PACKET_FRAME_MAX_SIZE];
+	uint8_t sym[MAX_SYMBOLS];
+	int16_t offset[MAX_SYMBOLS];
+};
+
+static QueueHandle_t _event_q;
 static temperature_sensor_handle_t _tsens;
 static esp_pm_lock_handle_t _awake_lock;
 static volatile float _temp_c = NAN;
 static uint32_t _tx_seq;
+
+/* Filled by the phy_set_freq wrap while a packet is on the air. */
+static DRAM_ATTR volatile bool _recording;
+static DRAM_ATTR volatile uint8_t _rec_n;
+static DRAM_ATTR volatile uint16_t _rec_mhz;
+static DRAM_ATTR int16_t _rec_offset[MAX_SYMBOLS];
 
 static inline uint32_t _sof_frame(void)
 {
@@ -143,20 +166,47 @@ static void _temp_update(void)
 	}
 }
 
-/* Waits out the window while printing TX events as they arrive. */
+/* HOP,<ms>,<seq>,<hop>,<channel>,<mhz>,<symbols>,<offsets> (lists space-separated) */
+static void _hops_print(const struct event *ev)
+{
+	for (uint8_t start = 0, hop = 0; start < ev->nsym;
+	     start += HUBBLE_PACKET_FRAME_PAYLOAD_MAX_SIZE, hop++) {
+		uint8_t end = start + HUBBLE_PACKET_FRAME_PAYLOAD_MAX_SIZE;
+
+		if (end > ev->nsym) {
+			end = ev->nsym;
+		}
+		printf("HOP,%lld,%lu,%u,%u,%u,", ev->ms, (unsigned long)ev->seq,
+		       hop, ev->channel[hop], ev->mhz);
+		for (uint8_t i = start; i < end; i++) {
+			printf(i == start ? "%u" : " %u", ev->sym[i]);
+		}
+		printf(",");
+		for (uint8_t i = start; i < end; i++) {
+			printf(i == start ? "%d" : " %d", ev->offset[i]);
+		}
+		printf("\n");
+	}
+}
+
+/* Waits out the window while printing TX and HOP events as they arrive. */
 static void _tx_drain(int64_t until_us)
 {
-	struct tx_event ev;
+	static struct event ev;
 
 	for (;;) {
 		int64_t left_us = until_us - esp_timer_get_time();
 		TickType_t ticks = left_us > 0 ? pdMS_TO_TICKS(left_us / 1000) : 0;
 
-		if (xQueueReceive(_tx_q, &ev, ticks) != pdTRUE) {
+		if (xQueueReceive(_event_q, &ev, ticks) != pdTRUE) {
 			return;
 		}
-		printf("TX,%lld,%lu,%.1f\n", ev.ms, (unsigned long)ev.seq,
-		       _temp_c);
+		if (ev.kind == EVENT_TX) {
+			printf("TX,%lld,%lu,%.1f\n", ev.ms,
+			       (unsigned long)ev.seq, _temp_c);
+		} else {
+			_hops_print(&ev);
+		}
 	}
 }
 
@@ -232,8 +282,8 @@ esp_err_t diag_clock_drift_start(void)
 	temperature_sensor_config_t tcfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
 	esp_err_t err;
 
-	_tx_q = xQueueCreate(TX_QUEUE_LEN, sizeof(struct tx_event));
-	if (_tx_q == NULL) {
+	_event_q = xQueueCreate(EVENT_QUEUE_LEN, sizeof(struct event));
+	if (_event_q == NULL) {
 		return ESP_ERR_NO_MEM;
 	}
 
@@ -263,7 +313,21 @@ esp_err_t diag_clock_drift_start(void)
 	return ESP_OK;
 }
 
-struct hubble_sat_packet_frames;
+void __real_phy_set_freq(uint16_t freq_mhz, int offset);
+void __wrap_phy_set_freq(uint16_t freq_mhz, int offset);
+
+/*
+ * In IRAM: the PHY library may call this itself, possibly with the flash
+ * cache off. It only records while a satellite packet is being sent.
+ */
+void IRAM_ATTR __wrap_phy_set_freq(uint16_t freq_mhz, int offset)
+{
+	if (_recording && _rec_n < MAX_SYMBOLS) {
+		_rec_mhz = freq_mhz;
+		_rec_offset[_rec_n++] = (int16_t)offset;
+	}
+	__real_phy_set_freq(freq_mhz, offset);
+}
 
 int __real_hubble_sat_board_packet_send(
 	const struct hubble_sat_packet_frames *packet);
@@ -273,7 +337,7 @@ int __wrap_hubble_sat_board_packet_send(
 int __wrap_hubble_sat_board_packet_send(
 	const struct hubble_sat_packet_frames *packet)
 {
-	struct tx_event ev;
+	static struct event ev;
 	int64_t hold_us = CONFIG_DIAG_TX_START_DELAY_S * 1000000LL -
 			  esp_timer_get_time();
 
@@ -282,11 +346,35 @@ int __wrap_hubble_sat_board_packet_send(
 	}
 
 	/* Queued, not printed: console I/O here would shift the packet. */
+	ev.kind = EVENT_TX;
 	ev.ms = esp_timer_get_time() / 1000;
 	ev.seq = ++_tx_seq;
-	if (_tx_q != NULL) {
-		(void)xQueueSend(_tx_q, &ev, 0);
+	if (_event_q != NULL) {
+		(void)xQueueSend(_event_q, &ev, 0);
 	}
 
-	return __real_hubble_sat_board_packet_send(packet);
+	_rec_n = 0;
+	_recording = true;
+	int ret = __real_hubble_sat_board_packet_send(packet);
+	_recording = false;
+
+	/* A copy of about 200 bytes before the SDK's gap to the next packet. */
+	ev.kind = EVENT_HOPS;
+	ev.nsym = _rec_n < packet->total_number_of_symbols
+			  ? _rec_n
+			  : (uint8_t)packet->total_number_of_symbols;
+	ev.mhz = _rec_mhz;
+	for (uint8_t i = 0; i < HUBBLE_PACKET_FRAME_MAX_SIZE; i++) {
+		ev.channel[i] = packet->frame[i].channel;
+	}
+	for (uint8_t i = 0; i < ev.nsym; i++) {
+		ev.sym[i] = packet->frame[i / HUBBLE_PACKET_FRAME_PAYLOAD_MAX_SIZE]
+				    .data[i % HUBBLE_PACKET_FRAME_PAYLOAD_MAX_SIZE];
+		ev.offset[i] = _rec_offset[i];
+	}
+	if (_event_q != NULL) {
+		(void)xQueueSend(_event_q, &ev, 0);
+	}
+
+	return ret;
 }

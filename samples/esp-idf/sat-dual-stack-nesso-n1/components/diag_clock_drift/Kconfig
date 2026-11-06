@@ -6,11 +6,12 @@ menu "Clock drift diagnostic"
     config DIAG_CLOCK_DRIFT
     bool "Measure the crystal against USB SOF and log satellite TX"
     default n
-    depends on SOC_USB_SERIAL_JTAG_SUPPORTED
+    depends on IDF_TARGET_ESP32C6
     help
         Prints DRIFT lines (crystal offset against the host's 1 kHz USB
-        start-of-frame, plus die temperature) every window, and a TX line
-        for each satellite packet. Off in normal builds.
+        start-of-frame, plus die temperature) every window, a TX line for
+        each satellite packet, and a HOP line for each of its frames with
+        the frequency the radio was set to. Off in normal builds.
 
     config DIAG_CLOCK_DRIFT_WINDOW_S
     int "Measurement window, in seconds"

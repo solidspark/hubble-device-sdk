@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Capture DRIFT and TX lines from a CONFIG_DIAG_CLOCK_DRIFT build.
 
-Writes drift.csv, tx.csv and the full console log to the output directory.
+Writes drift.csv, tx.csv, hop.csv and the full console log to the output directory.
 Each row gets the host's wall-clock and monotonic time, so device rows can
 be joined to receiver logs by time.
 
@@ -20,6 +20,7 @@ import serial
 
 DRIFT_COLS = ["frames", "ticks", "ppm", "die_temp_c", "valid"]
 TX_COLS = ["seq", "die_temp_c"]
+HOP_COLS = ["seq", "hop", "channel", "mhz", "symbols", "offsets"]
 
 
 def open_port(port, baud, wait_s, reset):
@@ -65,14 +66,17 @@ def main():
 
     with open(os.path.join(args.out, "drift.csv"), "w", newline="") as fd, \
          open(os.path.join(args.out, "tx.csv"), "w", newline="") as ft, \
+         open(os.path.join(args.out, "hop.csv"), "w", newline="") as fh, \
          open(os.path.join(args.out, "console.log"), "w", buffering=1) as fl:
         drift = csv.writer(fd)
         tx = csv.writer(ft)
+        hop = csv.writer(fh)
         drift.writerow(["host_unix", "host_mono", "ms_since_boot"] + DRIFT_COLS)
         tx.writerow(["host_unix", "host_mono", "ms_since_boot"] + TX_COLS)
+        hop.writerow(["host_unix", "host_mono", "ms_since_boot"] + HOP_COLS)
 
         start = time.monotonic()
-        counts = {"DRIFT": 0, "TX": 0}
+        counts = {"DRIFT": 0, "TX": 0, "HOP": 0}
         buf = b""
         try:
             while args.duration <= 0 or time.monotonic() - start < args.duration:
@@ -98,6 +102,10 @@ def main():
                         tx.writerow([f"{now_unix:.3f}", f"{now_mono:.3f}"]
                                     + fields[1:])
                         ft.flush()
+                    elif fields[0] == "HOP" and len(fields) == 8:
+                        hop.writerow([f"{now_unix:.3f}", f"{now_mono:.3f}"]
+                                     + fields[1:])
+                        fh.flush()
                     else:
                         continue
                     counts[fields[0]] += 1
@@ -105,7 +113,8 @@ def main():
         except KeyboardInterrupt:
             pass
 
-    print(f"{counts['DRIFT']} DRIFT and {counts['TX']} TX lines in {args.out}",
+    print(f"{counts['DRIFT']} DRIFT, {counts['TX']} TX and {counts['HOP']} HOP "
+          f"lines in {args.out}",
           file=sys.stderr)
 
 
