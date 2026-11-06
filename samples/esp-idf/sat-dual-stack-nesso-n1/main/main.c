@@ -318,7 +318,8 @@ static bool _setup_resume(void)
 	}
 	_home_set(app_wifi_joined_home());
 
-	if (now_s < saved_at_s || now_s - saved_at_s > SETUP_MAX_AGE_S) {
+	if (SETUP_MAX_AGE_S != 0 &&
+	    (now_s < saved_at_s || now_s - saved_at_s > SETUP_MAX_AGE_S)) {
 		ESP_LOGW(APP_TAG, "Saved setup is %llu days old; waiting for "
 				  "the companion",
 			 (now_s - saved_at_s) / (24 * 60 * 60));

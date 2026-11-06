@@ -93,12 +93,13 @@ menu "Sat Dual Stack Nesso N1 Sample Configuration"
     default "PT"
 
     config HUBBLE_SAMPLE_SETUP_MAX_AGE_DAYS
-    int "Days a saved setup is used without the companion"
-    default 7
-    range 1 365
+    int "Days a saved setup is used without the companion (0 = no limit)"
+    default 0
+    range 0 365
     help
-        Satellite ephemeris goes stale. After this many days since the
+        0 keeps the saved setup until the companion runs again or it is
+        cleared from the menu. Otherwise, after this many days since the
         last run of dual-stack-companion.py, the device waits for the
-        companion again instead of resuming from the saved setup.
+        companion again. Ephemeris ages, so pass times drift slowly.
 
 endmenu

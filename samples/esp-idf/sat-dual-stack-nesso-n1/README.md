@@ -145,7 +145,7 @@ This sample exposes the following options (via `idf.py menuconfig`, under
 | `CONFIG_HUBBLE_SAMPLE_TZ_LABEL` | `"PT"` | Label shown after pass times. |
 | `CONFIG_HUBBLE_SAMPLE_HOME_SCAN_MINUTES` | `10` | How often to scan for the Wi-Fi network above. While it is in range the device is at home and beacons less often. 0 turns this off. |
 | `CONFIG_HUBBLE_SAMPLE_HOME_BEACON_INTERVAL_MS` | `10000` | Beacon interval at home. |
-| `CONFIG_HUBBLE_SAMPLE_SETUP_MAX_AGE_DAYS` | `7` | Days a saved setup is used before the device waits for the companion again. |
+| `CONFIG_HUBBLE_SAMPLE_SETUP_MAX_AGE_DAYS` | `0` | Days a saved setup is used before the device waits for the companion again. 0 keeps it until the companion runs again. |
 
 ## Build-time Provisioning
 
@@ -221,7 +221,8 @@ The device waits for the companion again when:
 
 - No setup is saved, or **Saved setup** was cleared from the menu.
 - Wi-Fi is not set, or joining or SNTP fails.
-- The saved setup is older than `CONFIG_HUBBLE_SAMPLE_SETUP_MAX_AGE_DAYS`.
+- `CONFIG_HUBBLE_SAMPLE_SETUP_MAX_AGE_DAYS` is not 0 and the saved setup is
+  older than that.
 
 > [!NOTE]
 > The Wi-Fi password is stored in `sdkconfig`, which git ignores. Do not add it
