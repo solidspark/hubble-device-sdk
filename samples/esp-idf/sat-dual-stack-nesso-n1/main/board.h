@@ -6,7 +6,11 @@
 
 /**
  * @file board.h
- * @brief Arduino Nesso N1 board support: display, touch, LED and battery.
+ * @brief Board support: display, touch, LED and battery.
+ *
+ * The IDF target picks the board: board.c for the Arduino Nesso N1
+ * (esp32c6), board_mosaico.c for the ESP-Mosaico (esp32s31). Calls for
+ * hardware a board lacks are no-ops there.
  */
 
 #ifndef BOARD_H
@@ -15,13 +19,28 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "sdkconfig.h"
 #include "esp_err.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 
+#if CONFIG_IDF_TARGET_ESP32S31
+#include "esp_lcd_touch.h"
+
+/* The 2.16" 480x480 CO5300 AMOLED */
+#define BOARD_LCD_H_RES 480
+#define BOARD_LCD_V_RES 480
+
+/** @brief The CST9220 touch controller, or NULL if it did not answer. */
+esp_lcd_touch_handle_t board_touch_handle(void);
+
+/** @brief Run the vibration motor; blocks for the given time. */
+void board_vibrate(uint32_t ms);
+#else
 /* The 1.14" ST7789 panel, used in landscape */
 #define BOARD_LCD_H_RES 240
 #define BOARD_LCD_V_RES 135
+#endif
 
 /**
  * @brief Bring up the I2C bus, the IO expanders and the LCD.

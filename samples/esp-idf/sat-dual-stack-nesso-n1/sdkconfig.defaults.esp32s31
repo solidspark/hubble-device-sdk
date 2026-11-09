@@ -1,0 +1,31 @@
+# Copyright (c) 2026 Hubble Network, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+# ESP-Mosaico (ESP32-S31NRV16): 16 MB flash, 16 MB in-package PSRAM.
+# Values from espressif/esp-board-manager esp_boards/esp_mosaico.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_320=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_200M=y
+
+# The Type-C port is USB-OTG HS with no ROM console. The usb_hs_console
+# component starts a TinyUSB CDC console before app_main, and answers
+# esptool's DTR/RTS reset so idf.py flash works without the BOOT key.
+CONFIG_ESP_CONSOLE_NONE=y
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=n
+CONFIG_TINYUSB_CDC_ENABLED=y
+CONFIG_USB_HS_CONSOLE_USB_CDC_AUTO_DOWNLOAD=y
+CONFIG_USB_HS_CONSOLE_USB_CDC_AUTO_INIT=y
+
+# USB-OTG stops in light sleep, so the console would drop. The board keeps
+# the CPU at full speed and awake for now.
+CONFIG_PM_ENABLE=n
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=n
+CONFIG_PM_PROFILING=n
+
+# The UI renders the embedded Manrope TTF at any size.
+CONFIG_LV_USE_TINY_TTF=y
+CONFIG_LV_FONT_MONTSERRAT_14=y

@@ -5,6 +5,8 @@
 
 Pure Python so it runs without extra packages:
     python3 tools/gen_logo.py --width 24 > main/logo.c
+    python3 tools/gen_logo.py --width 48 --name hubble_logo_48 \
+        > main/logo_48.c
 """
 
 import argparse
@@ -105,6 +107,7 @@ def rasterize(polys, width):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--width", type=int, default=24)
+    parser.add_argument("--name", default="hubble_logo")
     args = parser.parse_args()
     height, rows = rasterize(polygons(PATH), args.width)
 
@@ -116,7 +119,7 @@ def main():
     for r in rows:
         print("\t" + ", ".join(f"0x{v:02x}" for v in r) + ",")
     print("};\n")
-    print("const lv_image_dsc_t hubble_logo = {")
+    print(f"const lv_image_dsc_t {args.name} = {{")
     print("\t.header = {")
     print("\t\t.magic = LV_IMAGE_HEADER_MAGIC,")
     print("\t\t.cf = LV_COLOR_FORMAT_A8,")

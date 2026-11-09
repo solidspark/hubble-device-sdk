@@ -365,3 +365,70 @@ The logo bitmap in `main/logo.c` is generated from the Hubble logomark:
 ```sh
 python3 tools/gen_logo.py --width 24 > main/logo.c
 ```
+
+## ESP-Mosaico (ESP32-S31)
+
+The same sample also builds for the
+[ESP-Mosaico](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s31/esp-mosaico/user_guide.html).
+The IDF target picks the board: `esp32c6` builds the Nesso N1, and `esp32s31`
+builds the ESP-Mosaico with `board_mosaico.c` and the touch UI in
+`ui_mosaico.c`. The S31 has its own build directory and `sdkconfig`, so the
+Nesso N1 configuration stays as it is.
+
+> [!IMPORTANT]
+> The S31 satellite radio calls `phy_set_freq_01k`, `phy_set_step_01k` and
+> `phy_tx_tone`. The S31 PHY library in ESP-IDF v6.1 (esp-phy-lib `5695f4f`)
+> does not have them, and the link fails. esp-phy-lib `20f1db05` or later
+> has them. That update changes only the `esp32s31` libraries.
+
+Build and flash:
+
+```sh
+idf.py -B build.esp32s31 -D SDKCONFIG=build.esp32s31/sdkconfig \
+    -D IDF_TARGET=esp32s31 build
+idf.py -B build.esp32s31 -D SDKCONFIG=build.esp32s31/sdkconfig \
+    -p PORT flash monitor
+```
+
+The Type-C port is USB-OTG HS. The ESP32-S31 ROM has no console on it, so
+`components/usb_hs_console` (from Espressif's esp-board-manager) starts a
+TinyUSB CDC console before `app_main`. It also answers esptool's reset, so
+`idf.py flash` works with no button. For the first flash, or if the
+firmware does not start, hold BOOT (back of the CoreBoard) while you power
+on the board.
+
+### Controls
+
+| Action | Result |
+| --- | --- |
+| Tap the dark screen, or press the front key | Wake the screen |
+| Tap the marker at the top of the ring | Pick Satellite or Terrestrial |
+| Swipe up, or tap the bar at the bottom | Open passes, transmission settings, payload and setup |
+| Swipe down, or tap the sheet's handle | Close the sheet and save changed settings |
+| Front key while the screen is on | Close the sheet, or turn the screen off |
+
+The screen turns off after 30 s with no touch. It stays on through a
+satellite window and for the 10 s before it.
+
+### Board Notes
+
+| Peripheral | Connection |
+| --- | --- |
+| Display | 2.16" 480x480 CO5300 AMOLED, QSPI on SPI2: CS 50, D0-D3 36/51/35/9. SCLK and reset swap between revisions. Power on GPIO 60, active low, soft-started with LEDC. |
+| Touch | CST9220 at 0x5A, INT GPIO 6, no reset pin. |
+| I2C | v1.0: SDA 0, SCL 1. v1.1 and v1.2: SDA 56, SCL 3. |
+| Keys | Front (AI) GPIO 7, BOOT GPIO 61, active low. |
+| LED | v1.0 only: GPIO 3, active low. On during a satellite transmission. |
+| Vibration motor | GPIO 8. One short pulse when a satellite window starts. |
+| Battery | BQ27220 fuel gauge at 0x55. The TP4057 charger has no I2C. |
+
+The board revision comes from eFuse `USER_DATA`. If that is blank, the
+sample probes for the fuel gauge on each revision's I2C pins.
+
+Known limits:
+
+- No 480x480 CO5300 init table is published. The driver's default table
+  (for 466x466 modules) runs, and each draw sets its own window.
+- Light sleep is off: USB-OTG stops in light sleep, and the console with it.
+- The UI font is Manrope (SIL Open Font License, `main/fonts/OFL.txt`), cut
+  to the glyphs the UI uses and drawn with LVGL's TinyTTF.

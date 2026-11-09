@@ -1,1 +1,3 @@
 managed_components/
+# ESP-Mosaico (ESP32-S31) build: idf.py -B build.esp32s31 ...
+build.esp32s31/

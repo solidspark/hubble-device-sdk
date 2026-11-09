@@ -2,3 +2,12 @@ dependencies:
   idf: ">=6.1"
   lvgl/lvgl: "~9.2.2"
   espressif/esp_lvgl_port: "~2.6.0"
+  # ESP-Mosaico (ESP32-S31): CO5300 AMOLED and CST9220 touch
+  espressif/esp_lcd_co5300:
+    version: "~2.2.0"
+    rules:
+      - if: "target == esp32s31"
+  waveshare/esp_lcd_touch_cst9217:
+    version: "~2.0.0"
+    rules:
+      - if: "target == esp32s31"
