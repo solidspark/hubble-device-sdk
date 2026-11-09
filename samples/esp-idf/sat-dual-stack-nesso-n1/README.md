@@ -349,6 +349,102 @@ battery percent, and a reserved byte.
 
 Turn `CONFIG_HUBBLE_SAMPLE_DEBUG` back off to transmit at each predicted pass.
 
+## Clock Drift Diagnostic
+
+A test build for packets with RS errors early in a run. The device times the
+host's 1 kHz USB start-of-frame (SOF) with its own crystal and logs the offset
+next to die temperature and each satellite packet. No SDR is needed. It is off
+by default; with it off, the build does not change.
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `CONFIG_DIAG_CLOCK_DRIFT` | off | Log `DRIFT` lines every window and a `TX` line per packet. |
+| `CONFIG_DIAG_CLOCK_DRIFT_WINDOW_S` | 5 | Window length. Longer is finer. |
+| `CONFIG_DIAG_TX_START_DELAY_S` | 0 | Hold any packet until this many seconds after boot. |
+| `CONFIG_DIAG_MINIMAL_INIT` | off | Nesso N1 only: no display, backlight, touch or UI, and the SX1262 held in reset (E0.P7 low, no SPI). |
+
+Set them in `idf.py menuconfig` (Clock drift diagnostic, and the sample's menu
+for minimal init). Also set `CONFIG_HUBBLE_SAMPLE_DEBUG`, so the first packets
+go out 2 minutes after boot rather than at the next pass.
+
+Console lines (CSV):
+
+```text
+DRIFT,<ms_since_boot>,<frames>,<ticks>,<ppm>,<die_temp_c>,<valid 0|1>
+TX,<ms_since_boot>,<seq>,<die_temp_c>
+HOP,<ms_since_boot>,<seq>,<hop>,<channel>,<mhz>,<symbols>,<offsets>
+```
+
+- `ticks` are `esp_timer` microseconds (1 µs steps from the 16 MHz systimer),
+  1000 per nominal frame. Positive ppm means the crystal runs fast against the
+  host.
+- The SOF index is `USB_SERIAL_JTAG_FRAM_NUM_REG`,
+  `USB_SERIAL_JTAG_SOF_FRAME_INDEX` (11 bits, wraps every 2048 ms). The window's
+  elapsed time resolves the wraps.
+- An edge counts only if the reads around it are less than 10 µs apart, and
+  the next edge comes 1000 ±20 µs later. The SOF register sometimes updates
+  hundreds of µs late. A rejected pair prints `DRIFTDBG,pair,...`, and the
+  edge is tried again, up to 50 times. If all tries fail, the window is
+  `valid=0`. Without USB, `frames` reads `nosof` and only the temperature is
+  logged.
+- Expect about ±0.3 ppm per 5 s window: 1 µs timer steps and about 1 µs of
+  edge jitter at each end.
+- `seq` counts packets since boot, including each retry. The `TX` temperature
+  comes from the latest window, so the send path reads no sensor and does no
+  console I/O.
+- A `HOP` line comes after each packet, one per frame. `symbols` are the
+  frame's FSK symbols and `offsets` the value passed to `phy_set_freq` for
+  each one (100 Hz units on the ESP32-C6), both space-separated. A
+  `-Wl,--wrap=phy_set_freq` in IRAM records them only while a satellite packet
+  is being sent, so they show what the radio was set to, not the SDK's formula.
+- The chip does not light-sleep during a window, because light sleep stops the
+  crystal. On USB this makes it run warmer than a normal build.
+
+### Capture and plot
+
+```sh
+pip install -r tools/requirements.txt
+python3 tools/drift_capture.py /dev/cu.usbmodem101 --out run1 --duration 1800 --reset
+python3 tools/plot_drift.py run1 --rx receiver.csv
+```
+
+`drift_capture.py` waits for the port, stamps each line with host time, and
+writes `drift.csv`, `tx.csv` and `console.log`. `--reset` restarts the chip so
+the capture starts at boot. Leave it off for a cold start, where plugging in
+is the boot.
+
+`plot_drift.py` plots ppm and die temperature against time since boot, marks
+invalid windows and each TX, and writes `run1/drift.png`. With `HOP` lines it
+also checks each frame against the SatNet v1 plan and writes
+`run1/hop_check.csv`. It measures the step from the preamble's 63 and 0
+symbols, checks that every symbol in a hop sits on one bin-0 grid, gives the
+bin-0 error against the spec channel (center − 31.5 steps), and adds the
+measured ppm to get the on-air error. It also checks that the channels follow
+one of the four hopping sequences, across retries. `--rx` takes a
+receiver CSV with `rs_corrections`, `decoded` (0|1), and `seq` or `timestamp`
+(unix seconds or ISO 8601). It joins on `seq` if present, else on the nearest
+TX by host wall clock.
+
+### Runbook
+
+1. Cold start: leave the board unplugged for 15 minutes or more, start
+   `drift_capture.py` without `--reset`, then plug in.
+2. Warm reset: run until RS corrections reach 0, then capture again with
+   `--reset` without removing power.
+3. Delayed TX: `CONFIG_DIAG_TX_START_DELAY_S=300`, cold start.
+4. Minimal init: `CONFIG_DIAG_MINIMAL_INIT=y`, cold start.
+5. TinyC6: the same cold start on a plain ESP32-C6 (below).
+
+USB power keeps the Nesso N1's charger running, which adds heat. The host's USB
+clock is only good to tens of ppm, so absolute ppm is approximate. Drift over a
+run, and the difference between boards on one host, are what count.
+
+For another ESP32-C6 app, such as `samples/esp-idf/sat-dual-stack` on the
+TinyC6, add `components/diag_clock_drift` to `EXTRA_COMPONENT_DIRS` and
+`diag_clock_drift` to the main component's `PRIV_REQUIRES`. Then call
+`diag_clock_drift_start()` after `nvs_flash_init()`. The component has no Nesso
+N1 code, and it hooks packets with `-Wl,--wrap=hubble_sat_board_packet_send`.
+
 ## Board Notes
 
 | Peripheral | Connection |

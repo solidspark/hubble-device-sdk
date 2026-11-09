@@ -102,4 +102,14 @@ menu "Sat Dual Stack Nesso N1 Sample Configuration"
         last run of dual-stack-companion.py, the device waits for the
         companion again. Ephemeris ages, so pass times drift slowly.
 
+    config DIAG_MINIMAL_INIT
+    bool "Clock drift test: skip the display and hold the LoRa radio in reset"
+    default n
+    depends on DIAG_CLOCK_DRIFT
+    help
+        Brings up only I2C and the IO expanders. The LCD, backlight, touch
+        and UI stay off, and E0.P7 (LORA_ENABLE / SX_NRST) is held low with
+        no SPI traffic to the SX1262. Shows whether boot-time display and
+        SPI activity matter to the early-packet errors.
+
 endmenu

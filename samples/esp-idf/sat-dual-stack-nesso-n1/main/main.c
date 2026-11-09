@@ -40,6 +40,10 @@
 #include "board.h"
 #include "ui.h"
 
+#ifdef CONFIG_DIAG_CLOCK_DRIFT
+#include "diag_clock_drift.h"
+#endif
+
 static const char *APP_TAG = "main";
 
 #define MS_PER_SEC         1000U
@@ -616,6 +620,13 @@ void app_main(void)
 	}
 	ESP_ERROR_CHECK(err);
 
+#ifdef CONFIG_DIAG_CLOCK_DRIFT
+	/* First, so the log covers the warm-up from power-on. */
+	if (diag_clock_drift_start() != ESP_OK) {
+		ESP_LOGE(APP_TAG, "Clock drift diagnostic did not start");
+	}
+#endif
+
 #ifdef CONFIG_HUBBLE_SAMPLE_SLEEP_FLOOR_TEST
 	app_sleep_floor_run();
 #endif
@@ -688,9 +699,11 @@ void app_main(void)
 			(void)esp_timer_start_periodic(log_timer,
 						       BATTERY_LOG_US);
 		}
+#ifndef CONFIG_DIAG_MINIMAL_INIT
 		if (ui_init() != ESP_OK) {
 			ESP_LOGE(APP_TAG, "UI init failed");
 		}
+#endif
 		app_power_log_start();
 		/* Before setup: the test must run even if provisioning stalls. */
 		app_power_test_start();
