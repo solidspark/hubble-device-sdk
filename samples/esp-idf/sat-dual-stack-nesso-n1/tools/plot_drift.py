@@ -16,6 +16,10 @@ synthesizer step (from the preamble's 63 and 0 symbols), that every symbol in
 a hop sits on one bin-0 grid, the bin-0 error against the spec channel, the
 on-air error with the measured ppm, and that channels follow one of the four
 hopping sequences. Results go to hop_check.csv.
+
+With sweep.csv (CONFIG_DIAG_TX_POWER_SWEEP), it shades each TX level and
+compares the crystal at the end of each level with the end of the idle gap
+before it. Results go to sweep_summary.csv and ppm_vs_power.png.
 """
 
 import argparse
@@ -183,6 +187,82 @@ def check_hops(hops, drift, out_csv):
     return res
 
 
+def load_sweep(path):
+    f = os.path.join(path, "sweep.csv")
+    if not os.path.exists(f):
+        return None
+    ev = pd.read_csv(f)
+    if ev.empty:
+        return None
+    ev["t_s"] = ev["ms_since_boot"] / 1000.0
+    on = ev[ev["event"] == "on"][["step", "dbm", "t_s"]]
+    off = ev[ev["event"] == "off"][["step", "t_s", "packets"]]
+    levels = on.merge(off, on="step", suffixes=("_on", "_off"))
+    return levels.sort_values("step").reset_index(drop=True)
+
+
+def _tail_mean(df, col, t0, t1, frac=0.5):
+    """Mean of col over the last frac of [t0, t1], once it has settled."""
+    start = t1 - (t1 - t0) * frac
+    win = df[(df["t_s"] >= start) & (df["t_s"] <= t1)][col].dropna()
+    return win.mean() if len(win) else float("nan"), len(win)
+
+
+def check_sweep(levels, drift, out_csv, out_png):
+    ok = drift[drift["valid"] == 1]
+    rows = []
+    prev_end = 0.0
+    for _, lv in levels.iterrows():
+        base_ppm, nb = _tail_mean(ok, "ppm", prev_end, lv["t_s_on"])
+        on_ppm, non = _tail_mean(ok, "ppm", lv["t_s_on"], lv["t_s_off"])
+        base_t, _ = _tail_mean(drift, "die_temp_c", prev_end, lv["t_s_on"])
+        on_t, _ = _tail_mean(drift, "die_temp_c", lv["t_s_on"], lv["t_s_off"])
+        rows.append({
+            "step": lv["step"], "dbm": lv["dbm"], "packets": lv["packets"],
+            "base_ppm": base_ppm, "on_ppm": on_ppm,
+            "delta_ppm": on_ppm - base_ppm,
+            "delta_hz_at_2482mhz": (on_ppm - base_ppm) * 2482.0,
+            "base_temp_c": base_t, "on_temp_c": on_t,
+            "delta_temp_c": on_t - base_t,
+            "base_windows": nb, "on_windows": non,
+        })
+        prev_end = lv["t_s_off"]
+    res = pd.DataFrame(rows)
+    if res.empty:
+        print("sweep: no level has both on and off lines")
+        return None
+    res.to_csv(out_csv, index=False)
+
+    print("sweep: level, packets, crystal pull vs idle gap, die temp rise")
+    for _, r in res.iterrows():
+        print(f"  {int(r['dbm']):>2} dBm  {int(r['packets']):>4} pkts  "
+              f"{r['delta_ppm']:+.2f} ppm ({r['delta_hz_at_2482mhz']:+.0f} Hz)"
+              f"  {r['delta_temp_c']:+.1f} C  "
+              f"[{int(r['base_windows'])}/{int(r['on_windows'])} windows]")
+
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 4))
+    up = res["step"] <= res["dbm"].idxmax()
+    for mask, label, mk in ((up, "rising", "o-"), (~up, "falling", "s--")):
+        part = res[mask]
+        a1.plot(part["dbm"], part["delta_ppm"], mk, label=label)
+        a2.plot(part["dbm"], part["delta_temp_c"], mk, label=label)
+    a1.set_xlabel("TX power (dBm)")
+    a1.set_ylabel("crystal pull vs idle gap (ppm)")
+    sec = a1.secondary_yaxis("right", functions=(lambda p: p * 2482.0,
+                                                 lambda hz: hz / 2482.0))
+    sec.set_ylabel("Hz at 2482 MHz")
+    a2.set_xlabel("TX power (dBm)")
+    a2.set_ylabel("die temp rise (C)")
+    for ax in (a1, a2):
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize="small")
+    fig.suptitle("Back-to-back 13 B packets: crystal pull against PA power")
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=120)
+    print(f"wrote {out_png}")
+    return res
+
+
 def summarize(drift, tx):
     ok = drift[drift["valid"] == 1]
     print(f"windows: {len(drift)} ({len(ok)} valid, "
@@ -211,6 +291,12 @@ def main():
     hopres = (check_hops(hops, drift,
                          os.path.join(args.capture, "hop_check.csv"))
               if hops is not None else None)
+
+    levels = load_sweep(args.capture)
+    if levels is not None:
+        check_sweep(levels, drift,
+                    os.path.join(args.capture, "sweep_summary.csv"),
+                    os.path.join(args.capture, "ppm_vs_power.png"))
 
     rows = 2 + (rx is not None) + (hopres is not None)
     fig, axes = plt.subplots(rows, 1, sharex=True, figsize=(11, 3 * rows + 1))
@@ -261,10 +347,24 @@ def main():
         ax.legend(loc="best", fontsize="small")
 
     for ax in axes:
-        for t in tx["t_s"]:
-            ax.axvline(t, color="tab:green", alpha=0.25, linewidth=0.8)
+        if levels is not None:
+            for _, lv in levels.iterrows():
+                ax.axvspan(lv["t_s_on"], lv["t_s_off"], color="tab:green",
+                           alpha=0.08 + 0.012 * lv["dbm"], linewidth=0)
+        elif len(tx) < 500:
+            for t in tx["t_s"]:
+                ax.axvline(t, color="tab:green", alpha=0.25, linewidth=0.8)
         ax.grid(True, alpha=0.3)
-    axes[0].set_title("Clock drift vs USB SOF (green lines: satellite TX)")
+    if levels is not None:
+        for _, lv in levels.iterrows():
+            axes[0].annotate(f"{int(lv['dbm'])}",
+                             ((lv["t_s_on"] + lv["t_s_off"]) / 2, 1.0),
+                             xycoords=("data", "axes fraction"),
+                             ha="center", va="bottom", fontsize="small")
+        axes[0].set_title("Clock drift vs USB SOF (shaded: TX level, dBm)",
+                          pad=16)
+    else:
+        axes[0].set_title("Clock drift vs USB SOF (green lines: satellite TX)")
     axes[-1].set_xlabel("time since boot (s)")
 
     out = args.out or os.path.join(args.capture, "drift.png")

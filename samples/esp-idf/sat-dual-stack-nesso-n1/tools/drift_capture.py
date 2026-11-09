@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Capture DRIFT and TX lines from a CONFIG_DIAG_CLOCK_DRIFT build.
 
-Writes drift.csv, tx.csv, hop.csv and the full console log to the output directory.
+Writes drift.csv, tx.csv, hop.csv, sweep.csv and the full console log to the output directory.
 Each row gets the host's wall-clock and monotonic time, so device rows can
 be joined to receiver logs by time.
 
@@ -21,6 +21,7 @@ import serial
 DRIFT_COLS = ["frames", "ticks", "ppm", "die_temp_c", "valid"]
 TX_COLS = ["seq", "die_temp_c"]
 HOP_COLS = ["seq", "hop", "channel", "mhz", "symbols", "offsets"]
+SWEEP_COLS = ["step", "dbm", "event", "packets"]
 
 
 def open_port(port, baud, wait_s, reset):
@@ -67,16 +68,20 @@ def main():
     with open(os.path.join(args.out, "drift.csv"), "w", newline="") as fd, \
          open(os.path.join(args.out, "tx.csv"), "w", newline="") as ft, \
          open(os.path.join(args.out, "hop.csv"), "w", newline="") as fh, \
+         open(os.path.join(args.out, "sweep.csv"), "w", newline="") as fs, \
          open(os.path.join(args.out, "console.log"), "w", buffering=1) as fl:
         drift = csv.writer(fd)
         tx = csv.writer(ft)
         hop = csv.writer(fh)
+        sweep = csv.writer(fs)
         drift.writerow(["host_unix", "host_mono", "ms_since_boot"] + DRIFT_COLS)
         tx.writerow(["host_unix", "host_mono", "ms_since_boot"] + TX_COLS)
         hop.writerow(["host_unix", "host_mono", "ms_since_boot"] + HOP_COLS)
+        sweep.writerow(["host_unix", "host_mono", "ms_since_boot"]
+                       + SWEEP_COLS)
 
         start = time.monotonic()
-        counts = {"DRIFT": 0, "TX": 0, "HOP": 0}
+        counts = {"DRIFT": 0, "TX": 0, "HOP": 0, "SWEEP": 0}
         buf = b""
         try:
             while args.duration <= 0 or time.monotonic() - start < args.duration:
@@ -93,6 +98,11 @@ def main():
                     line = raw.decode("utf-8", "replace").strip()
                     now_unix, now_mono = time.time(), time.monotonic()
                     fl.write(f"{now_unix:.3f} {line}\n")
+                    # A SWEEP line comes from another task than HOP, and
+                    # can land in the middle of a HOP line.
+                    cut = line.find("SWEEP,")
+                    if cut > 0:
+                        line = line[cut:]
                     fields = line.split(",")
                     if fields[0] == "DRIFT" and len(fields) == 7:
                         drift.writerow([f"{now_unix:.3f}", f"{now_mono:.3f}"]
@@ -106,6 +116,10 @@ def main():
                         hop.writerow([f"{now_unix:.3f}", f"{now_mono:.3f}"]
                                      + fields[1:])
                         fh.flush()
+                    elif fields[0] == "SWEEP" and len(fields) == 6:
+                        sweep.writerow([f"{now_unix:.3f}", f"{now_mono:.3f}"]
+                                       + fields[1:])
+                        fs.flush()
                     else:
                         continue
                     counts[fields[0]] += 1
@@ -113,8 +127,8 @@ def main():
         except KeyboardInterrupt:
             pass
 
-    print(f"{counts['DRIFT']} DRIFT, {counts['TX']} TX and {counts['HOP']} HOP "
-          f"lines in {args.out}",
+    print(f"{counts['DRIFT']} DRIFT, {counts['TX']} TX, {counts['HOP']} HOP "
+          f"and {counts['SWEEP']} SWEEP lines in {args.out}",
           file=sys.stderr)
 
 

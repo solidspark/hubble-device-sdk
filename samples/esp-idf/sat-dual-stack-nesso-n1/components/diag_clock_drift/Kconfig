@@ -30,4 +30,38 @@ menu "Clock drift diagnostic"
         0 leaves TX timing as it is. Use it to see whether corrections
         follow time since power-on rather than the first transmissions.
 
+    config DIAG_TX_POWER_SWEEP
+    bool "Replace satellite passes with a TX power sweep"
+    default n
+    depends on DIAG_CLOCK_DRIFT
+    help
+        After init, sends 13-byte satellite packets back to back at each
+        power level, up from 0 dBm to 20 dBm and back down, with an idle
+        gap between levels. Prints a SWEEP line at each level start and
+        end so the DRIFT lines can show crystal pull against PA power.
+        The device makes no scheduled passes in this mode.
+
+    config DIAG_SWEEP_STEP_DBM
+    int "Power step, in dBm"
+    default 5
+    range 1 20
+    depends on DIAG_TX_POWER_SWEEP
+
+    config DIAG_SWEEP_ON_S
+    int "Seconds of back-to-back TX at each level"
+    default 60
+    range 5 600
+    depends on DIAG_TX_POWER_SWEEP
+    help
+        Use at least several drift windows, so the module reaches a
+        steady temperature.
+
+    config DIAG_SWEEP_OFF_S
+    int "Idle seconds between levels"
+    default 60
+    range 0 600
+    depends on DIAG_TX_POWER_SWEEP
+    help
+        The idle gap gives each level its own baseline.
+
 endmenu

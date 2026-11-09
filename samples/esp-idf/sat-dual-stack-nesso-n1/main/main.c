@@ -41,6 +41,7 @@
 #include "ui.h"
 
 #ifdef CONFIG_DIAG_CLOCK_DRIFT
+#include <stdio.h>
 #include "diag_clock_drift.h"
 #endif
 
@@ -556,6 +557,74 @@ static void _satellite_run(void)
 	vTaskDelay(pdMS_TO_TICKS(DONE_SCREEN_MS));
 }
 
+#ifdef CONFIG_DIAG_TX_POWER_SWEEP
+/* Defined in the ESP port's radio.c; read on every symbol. */
+extern uint8_t _sat_power_dbm;
+
+#define SWEEP_PAYLOAD_LEN 13U
+#define SWEEP_MAX_DBM     20
+
+/* Longest SatNet v1 packet, so the PA duty cycle is as high as it gets. */
+static void _sweep_level(int step, int dbm)
+{
+	struct hubble_sat_packet packet = {0};
+	uint8_t payload[SWEEP_PAYLOAD_LEN] = {0};
+	unsigned int sent = 0;
+	int64_t end_us;
+	int ret;
+
+	ret = hubble_sat_packet_get(&packet, payload, sizeof(payload));
+	if (ret != 0) {
+		ESP_LOGE(APP_TAG, "Sweep: no packet, ret: %d", ret);
+		return;
+	}
+
+	_sat_power_dbm = (uint8_t)dbm;
+	printf("SWEEP,%lld,%d,%d,on,\n", esp_timer_get_time() / 1000, step,
+	       dbm);
+	board_led_set(true);
+	end_us = esp_timer_get_time() + CONFIG_DIAG_SWEEP_ON_S * 1000000LL;
+	while (esp_timer_get_time() < end_us) {
+		ret = hubble_sat_packet_send(&packet,
+					     HUBBLE_SAT_RELIABILITY_NONE);
+		if (ret != 0) {
+			ESP_LOGE(APP_TAG, "Sweep: send failed, ret: %d", ret);
+			break;
+		}
+		sent++;
+	}
+	board_led_set(false);
+	printf("SWEEP,%lld,%d,%d,off,%u\n", esp_timer_get_time() / 1000,
+	       step, dbm, sent);
+	vTaskDelay(pdMS_TO_TICKS(CONFIG_DIAG_SWEEP_OFF_S * MS_PER_SEC));
+}
+
+static void _tx_power_sweep(void)
+{
+	int step = 0;
+	int dbm;
+
+	ESP_LOGI(APP_TAG, "TX power sweep: %d dBm steps, %d s on, %d s off",
+		 CONFIG_DIAG_SWEEP_STEP_DBM, CONFIG_DIAG_SWEEP_ON_S,
+		 CONFIG_DIAG_SWEEP_OFF_S);
+	vTaskDelay(pdMS_TO_TICKS(CONFIG_DIAG_SWEEP_OFF_S * MS_PER_SEC));
+
+	for (dbm = 0; dbm <= SWEEP_MAX_DBM; dbm += CONFIG_DIAG_SWEEP_STEP_DBM) {
+		_sweep_level(step++, dbm);
+	}
+	for (dbm -= 2 * CONFIG_DIAG_SWEEP_STEP_DBM; dbm >= 0;
+	     dbm -= CONFIG_DIAG_SWEEP_STEP_DBM) {
+		_sweep_level(step++, dbm);
+	}
+
+	_sat_power_dbm = SWEEP_MAX_DBM;
+	printf("SWEEP,%lld,%d,,done,\n", esp_timer_get_time() / 1000, step);
+	for (;;) {
+		vTaskDelay(portMAX_DELAY);
+	}
+}
+#endif /* CONFIG_DIAG_TX_POWER_SWEEP */
+
 /*
  * NOTE: this function has many early returns.
  * For production code, we should clean up resources (sem, timers, deinit stack, etc.)
@@ -704,6 +773,10 @@ void app_main(void)
 	_synced_ms = hubble_time_get();
 	_provisioned = true;
 	ESP_LOGI(APP_TAG, "Hubble Network initialized");
+
+#ifdef CONFIG_DIAG_TX_POWER_SWEEP
+	_tx_power_sweep();
+#endif
 
 	if (app_sntp_configured() && CONFIG_HUBBLE_SAMPLE_HOME_SCAN_MINUTES > 0 &&
 	    xTaskCreate(_home_task, "home", 4096, NULL, 2, NULL) != pdPASS) {
