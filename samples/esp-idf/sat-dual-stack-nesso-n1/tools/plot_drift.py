@@ -12,8 +12,9 @@ timestamp (unix seconds or ISO 8601), each row joins to the nearest TX by
 the host's wall clock at capture time.
 
 With hop.csv, it also checks each frame against the SatNet v1 plan: the
-synthesizer step (from the preamble's 63 and 0 symbols), that every symbol in
-a hop sits on one bin-0 grid, the bin-0 error against the spec channel, the
+synthesizer step (from the preamble's 63 and 0 symbols, after rounding each
+request to the chip's synth grid), that every symbol in a hop sits on one
+evenly spaced bin grid, the bin-0 error against the spec channel, the
 on-air error with the measured ppm, and that channels follow one of the four
 hopping sequences. Results go to hop_check.csv.
 
@@ -23,6 +24,7 @@ before it. Results go to sweep_summary.csv and ppm_vs_power.png.
 """
 
 import argparse
+import math
 import os
 import sys
 
@@ -42,9 +44,22 @@ HOP_SEQUENCES = [
     [7, 0, 11, 18, 4, 2, 13, 5, 10, 17, 3, 9, 16, 14, 8, 12, 1, 6, 15],
 ]
 PREAMBLE = [63, 0, 63, 0, 63, 0, 63, 63]
-# ESP32-C6 phy_set_freq offsets are in 100 Hz units (the SDK's 400 Hz step
-# is 4 of them).
+# phy_set_freq takes its offset in 100 Hz units, but the ESP32-C6 synth
+# moves on a 15 MHz / 2^17 grid (~114.44 Hz) and rounds each request up to
+# it. Round-up is the only rule under which the C6 ESP_STEP_SCALE in
+# esp_sat_radio_config.h lands every symbol on its 457.76 Hz target; its
+# requests sit 0-100 Hz below the target.
 PHY_UNIT_HZ = 100.0
+C6_GRID_HZ = 15e6 / 131072
+
+
+def synth_hz(offset_units, grid_hz, snap):
+    req = offset_units * PHY_UNIT_HZ
+    if grid_hz <= 0:
+        return req
+    q = req / grid_hz
+    idx = math.ceil(q - 1e-9) if snap == "ceil" else round(q)
+    return idx * grid_hz
 
 
 def load_capture(path):
@@ -105,16 +120,21 @@ def load_hops(path):
     return hops.sort_values(["seq", "hop"]).reset_index(drop=True)
 
 
-def _step_units(hops):
+def _hop_hz(hops, grid_hz, snap):
+    hops["hz"] = [[h["mhz"] * 1e6 + synth_hz(o, grid_hz, snap)
+                   for o in h["off"]] for _, h in hops.iterrows()]
+
+
+def _step_hz(hops):
     steps = []
     for _, h in hops[hops["hop"] == 0].iterrows():
-        pre = list(zip(h["sym"][:len(PREAMBLE)], h["off"][:len(PREAMBLE)]))
+        pre = list(zip(h["sym"][:len(PREAMBLE)], h["hz"][:len(PREAMBLE)]))
         if [s for s, _ in pre] != PREAMBLE:
             continue
-        hi = [o for s, o in pre if s == 63]
-        lo = [o for s, o in pre if s == 0]
-        if len(set(hi)) == 1 and len(set(lo)) == 1:
-            steps.append((hi[0] - lo[0]) / 63.0)
+        hi = {f for s, f in pre if s == 63}
+        lo = {f for s, f in pre if s == 0}
+        if len(hi) == 1 and len(lo) == 1:
+            steps.append((hi.pop() - lo.pop()) / 63.0)
     return pd.Series(steps).median() if steps else None
 
 
@@ -128,18 +148,18 @@ def _sequence_check(channels):
     return best
 
 
-def check_hops(hops, drift, out_csv):
-    step_units = _step_units(hops)
-    if step_units is None:
+def check_hops(hops, drift, out_csv, grid_hz, snap):
+    _hop_hz(hops, grid_hz, snap)
+    step_hz = _step_hz(hops)
+    if step_hz is None:
         print("hops: no clean preamble, cannot measure the step")
         return None
-    step_hz = step_units * PHY_UNIT_HZ
 
     rows = []
     for _, h in hops.iterrows():
-        bins = {o - step_units * s for s, o in zip(h["sym"], h["off"])}
-        bin0_units = min(bins)
-        bin0_hz = h["mhz"] * 1e6 + bin0_units * PHY_UNIT_HZ
+        bin0s = sorted(f - step_hz * s for s, f in zip(h["sym"], h["hz"]))
+        bin0_hz = bin0s[len(bin0s) // 2]
+        bin_err = max(abs(b - bin0_hz) for b in bin0s)
         spec_bin0 = (SPEC_CH0_HZ + h["channel"] * SPEC_SPACING_HZ -
                      31.5 * step_hz)
         implied = round((bin0_hz + 31.5 * step_hz - SPEC_CH0_HZ) /
@@ -147,7 +167,8 @@ def check_hops(hops, drift, out_csv):
         rows.append({
             "t_s": h["t_s"], "seq": h["seq"], "hop": h["hop"],
             "channel": h["channel"], "nsym": len(h["sym"]),
-            "on_grid": len(bins) == 1, "implied_channel": implied,
+            "on_grid": bin_err < 1.0, "max_bin_err_hz": bin_err,
+            "implied_channel": implied,
             "bin0_hz": bin0_hz, "spec_bin0_hz": spec_bin0,
             "plan_err_hz": bin0_hz - spec_bin0,
         })
@@ -165,11 +186,14 @@ def check_hops(hops, drift, out_csv):
     seq_id, breaks = _sequence_check(list(res["channel"]))
     shapes = res.groupby("seq")["nsym"].apply(
         lambda v: "+".join(str(n) for n in v)).value_counts()
+    grid = f"{grid_hz:.2f} Hz grid, round {snap}" if grid_hz > 0 else \
+        "requests as sent, no grid"
     print(f"hops: {len(res)} in {res['seq'].nunique()} packets, "
-          f"step {step_hz:.1f} Hz")
+          f"step {step_hz:.2f} Hz ({grid})")
     print(f"  symbols per packet: " +
           ", ".join(f"{k} (x{v})" for k, v in shapes.items()))
-    print(f"  off the bin grid: {int((~res['on_grid']).sum())}, "
+    print(f"  hops with uneven bins: {int((~res['on_grid']).sum())}, "
+          f"worst symbol {res['max_bin_err_hz'].max():.0f} Hz from its bin, "
           f"channel mismatch: "
           f"{int((res['implied_channel'] != res['channel']).sum())}")
     print(f"  hopping: sequence {seq_id}, {breaks} breaks over "
@@ -282,6 +306,11 @@ def main():
     ap.add_argument("--rx-tolerance", type=float, default=10.0,
                     help="max seconds between a receiver row and its TX")
     ap.add_argument("--out", help="output image (default <capture>/drift.png)")
+    ap.add_argument("--grid-hz", type=float, default=C6_GRID_HZ,
+                    help="synth grid the chip rounds to; 0 = use requests "
+                         "as sent (default: ESP32-C6, %(default).5f)")
+    ap.add_argument("--snap", choices=("ceil", "nearest"), default="ceil",
+                    help="how the chip rounds a request to the grid")
     args = ap.parse_args()
 
     drift, tx = load_capture(args.capture)
@@ -289,7 +318,8 @@ def main():
     rx = load_rx(args.rx, tx, args.rx_tolerance) if args.rx else None
     hops = load_hops(args.capture)
     hopres = (check_hops(hops, drift,
-                         os.path.join(args.capture, "hop_check.csv"))
+                         os.path.join(args.capture, "hop_check.csv"),
+                         args.grid_hz, args.snap)
               if hops is not None else None)
 
     levels = load_sweep(args.capture)
@@ -343,7 +373,7 @@ def main():
         ax.set_ylabel("bin-0 vs spec (Hz)")
         sec = ax.secondary_yaxis("right", functions=(lambda hz: hz / step_hz,
                                                      lambda st: st * step_hz))
-        sec.set_ylabel(f"steps of {step_hz:.0f} Hz")
+        sec.set_ylabel(f"steps of {step_hz:.2f} Hz")
         ax.legend(loc="best", fontsize="small")
 
     for ax in axes:
